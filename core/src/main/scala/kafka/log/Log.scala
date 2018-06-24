@@ -153,6 +153,32 @@ case class CompletedTxn(producerId: Long, firstOffset: Long, lastOffset: Long, i
  * @param time The time instance used for checking the clock
  * @param maxProducerIdExpirationMs The maximum amount of time to wait before a producer id is considered expired
  * @param producerIdExpirationCheckIntervalMs How often to check for producer ids which need to be expired
+ *
+ * 以追加方式存储消息的日志类.
+ *
+ * 日志是由日志段的序列组成的, 每个日志段都带有一个基准位移, 该基准位移指向该段的第一条消息.
+ *
+ * 新的日志段会依据配置的规则(不超过特定大小或者不超过特定时间间隔)来生成.
+ *
+ * 参数 dir: 日志段所在的目录.
+ * 参数 config: 日志配置属性.
+ * 参数 logStartOffset: 可以暴露给kafka客户端的最老位移. logStartOffset在以下三种情况下会更新:
+ *                        - 用户发起DeleteRecordsRequest请求
+ *                        - broker日志保留机制
+ *                        - broker日志截断机制
+ *                      logStartOffset主要作用于以下两点:
+ *                        - 日志删除. nextOffset小于或等于logStartOffset的日志段可以被删除而没有任何影响.
+ *                          如果当前正在使用的日志段被删除了, 那么会触发一次日志滚动.
+ *                        - 在ListOffsetRequest请求中返回此位移. 为了避免offsetOutOfRange异常(用户获取更老的位移导致),
+ *                          需要保证logStartOffset <= 日志的高水位线 (TODO)
+ * 参数 recoveryPoint: 故障恢复的起始位移, 也就是还没有刷到磁盘的第一条消息位移.
+ * 参数 scheduler 用来执行后台任务的调度线程池.
+ * 参数 brokerTopicStats: 用来存放broker的topic统计指标的容器.
+ * 参数 time: 用来获取时间的实例.
+ * 参数 maxProducerIdExpirationMs: 一个producer id超时的最大等待时间.
+ * 参数 producerIdExpirationCheckIntervalMs: 隔多久检查一次producer id是否超时
+ *
+ *
  */
 @threadsafe
 class Log(@volatile var dir: File,
