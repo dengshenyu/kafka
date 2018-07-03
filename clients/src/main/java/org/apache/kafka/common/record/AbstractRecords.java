@@ -82,17 +82,28 @@ public abstract class AbstractRecords implements Records {
         };
     }
 
+    /**
+     * 预测转换到magic格式后的消息大小
+     * @param magic
+     * @param baseOffset
+     * @param compressionType
+     * @param records
+     * @return
+     */
     public static int estimateSizeInBytes(byte magic,
                                           long baseOffset,
                                           CompressionType compressionType,
                                           Iterable<Record> records) {
         int size = 0;
         if (magic <= RecordBatch.MAGIC_VALUE_V1) {
+            //版本号为1或者之前的编码方法
             for (Record record : records)
                 size += Records.LOG_OVERHEAD + LegacyRecord.recordSize(magic, record.key(), record.value());
         } else {
+            //版本号大于1的编码方法(里面使用了ZigZag-Encoding变长编码)
             size = DefaultRecordBatch.sizeInBytes(baseOffset, records);
         }
+        //返回预测压缩后的大小
         return estimateCompressedSizeInBytes(size, compressionType);
     }
 
@@ -141,6 +152,9 @@ public abstract class AbstractRecords implements Records {
      * For V0 and V1 with no compression, it's unclear if Records.LOG_OVERHEAD or 0 should be chosen. There is no header
      * per batch, but a sequence of batches is preceded by the offset and size. This method returns `0` as it's what
      * `MemoryRecordsBuilder` requires.
+     *
+     * 获取纪录header的大小. 对于没有压缩的V0和V1版本, 虽然每个batch没有header, 但是batch集合前有位移和大小头部, 因此难以决定
+     * 返回Records.LOG_OVERHEAD还是0. 对于这种情况, 此方法返回0, 这是MemoryRecordsBuilder所需要的值.
      */
     public static int recordBatchHeaderSizeInBytes(byte magic, CompressionType compressionType) {
         if (magic > RecordBatch.MAGIC_VALUE_V1) {

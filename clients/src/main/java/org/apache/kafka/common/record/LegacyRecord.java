@@ -366,14 +366,18 @@ public final class LegacyRecord {
         int valueSize = recordSize - recordOverhead(magic);
 
         // write the record header with a null value (the key is always null for the wrapper)
+        // 以value为null的方式写入记录头部(对于wrapper来说, key永远为null)
         write(buffer, magic, timestamp, null, null, compressionType, timestampType);
         buffer.position(recordPosition);
 
         // now fill in the value size
+        // 写入value的大小
         buffer.putInt(recordPosition + keyOffset(magic), valueSize);
 
         // compute and fill the crc from the beginning of the message
+        // 计算并填充CRC校验和
         long crc = Crc32.crc32(buffer, MAGIC_OFFSET, recordSize - MAGIC_OFFSET);
+        // 写入校验和
         ByteUtils.writeUnsignedInt(buffer, recordPosition + CRC_OFFSET, crc);
     }
 
@@ -415,6 +419,18 @@ public final class LegacyRecord {
         return write(out, magic, timestamp, wrapNullable(key), wrapNullable(value), compressionType, timestampType);
     }
 
+    /**
+     * 写入消息
+     * @param out
+     * @param magic
+     * @param timestamp
+     * @param key
+     * @param value
+     * @param compressionType
+     * @param timestampType
+     * @return
+     * @throws IOException
+     */
     public static long write(DataOutputStream out,
                              byte magic,
                              long timestamp,
@@ -422,8 +438,11 @@ public final class LegacyRecord {
                              ByteBuffer value,
                              CompressionType compressionType,
                              TimestampType timestampType) throws IOException {
+        //获取压缩和时间戳指示位
         byte attributes = computeAttributes(magic, compressionType, timestampType);
+        //计算CRC校验和
         long crc = computeChecksum(magic, attributes, timestamp, key, value);
+        //写入消息
         write(out, magic, crc, attributes, timestamp, key, value);
         return crc;
     }
@@ -443,6 +462,7 @@ public final class LegacyRecord {
 
     // Write a record to the buffer, if the record's compression type is none, then
     // its value payload should be already compressed with the specified type
+    // 写入消息记录, 如果记录的压缩类型为none, 那么表示它应该已经进行了压缩
     private static void write(DataOutputStream out,
                               byte magic,
                               long crc,
@@ -456,17 +476,24 @@ public final class LegacyRecord {
             throw new IllegalArgumentException("Invalid message timestamp " + timestamp);
 
         // write crc
+        // 写入CRC校验和
         out.writeInt((int) (crc & 0xffffffffL));
+
         // write magic value
+        // 写入magic值
         out.writeByte(magic);
+
         // write attributes
+        //写入属性指示位
         out.writeByte(attributes);
 
         // maybe write timestamp
+        // 写入时间戳
         if (magic > RecordBatch.MAGIC_VALUE_V0)
             out.writeLong(timestamp);
 
         // write the key
+        // 写入key
         if (key == null) {
             out.writeInt(-1);
         } else {
@@ -474,7 +501,9 @@ public final class LegacyRecord {
             out.writeInt(size);
             Utils.writeTo(out, key, size);
         }
+
         // write the value
+        // 写入value
         if (value == null) {
             out.writeInt(-1);
         } else {
@@ -493,6 +522,14 @@ public final class LegacyRecord {
     }
 
     // visible only for testing
+
+    /**
+     * 获取属性指示字节, 包含压缩 和 时间戳 指示位
+     * @param magic
+     * @param type
+     * @param timestampType
+     * @return
+     */
     public static byte computeAttributes(byte magic, CompressionType type, TimestampType timestampType) {
         byte attributes = 0;
         if (type.id > 0)
@@ -514,6 +551,8 @@ public final class LegacyRecord {
 
     /**
      * Compute the checksum of the record from the attributes, key and value payloads
+     *
+     * 计算消息记录的CRC校验和
      */
     private static long computeChecksum(byte magic, byte attributes, long timestamp, ByteBuffer key, ByteBuffer value) {
         Crc32 crc = new Crc32();

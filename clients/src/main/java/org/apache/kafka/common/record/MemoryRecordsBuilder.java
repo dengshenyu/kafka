@@ -36,6 +36,11 @@ import static org.apache.kafka.common.utils.Utils.wrapNullable;
  * In cases where keeping memory retention low is important and there's a gap between the time that record appends stop
  * and the builder is closed (e.g. the Producer), it's important to call `closeForRecordAppends` when the former happens.
  * This will release resources like compression buffers that can be relatively large (64 KB for LZ4).
+ *
+ * 此方法用来在内存中生成新的日志数据(也就是生成MemoryRecords), 它提供方法来新增消息记录, 支持消息格式转换, 并处理消息压缩.
+ *
+ * 值得注意的是, 从停止新增记录到关闭此builder, 往往是两个时不同的间点, 因此如果为了保持低内存消耗, 可以在停止新增记录时调用
+ * closeForRecordAppends方法, 这样会释放用于压缩的缓冲区(相对来说比较大, LZ4会占用64KB)
  */
 public class MemoryRecordsBuilder {
     private static final float COMPRESSION_RATE_ESTIMATION_FACTOR = 1.05f;
@@ -123,8 +128,11 @@ public class MemoryRecordsBuilder {
         this.initialPosition = bufferStream.position();
         this.batchHeaderSizeInBytes = AbstractRecords.recordBatchHeaderSizeInBytes(magic, compressionType);
 
+        //预留header的字节空间
         bufferStream.position(initialPosition + batchHeaderSizeInBytes);
+
         this.bufferStream = bufferStream;
+        //compressionType.wrapForOutput负责生成带有压缩算法的输出流
         this.appendStream = new DataOutputStream(compressionType.wrapForOutput(this.bufferStream, magic));
     }
 
@@ -147,6 +155,23 @@ public class MemoryRecordsBuilder {
      * @param writeLimit The desired limit on the total bytes for this record set (note that this can be exceeded
      *                   when compression is used since size estimates are rough, and in the case that the first
      *                   record added exceeds the size).
+     *
+     * 生成一个MemoryRecordsBuilder
+     *
+     * 参数 buffer: 存储转换后数据的缓冲区(如果此缓冲区大小与实际追加的记录大小不符, 那么此类会新创建一个缓冲区)
+     * 参数 magic: 使用的消息格式版本
+     * 参数 compressionType: 使用的压缩类型
+     * 参数 timestampType: 使用的时间戳类型, "消息创建时间戳"或"消息追加时间戳", 对于magic值 > 0的消息来说, 此值不能取{@link TimestampType#NO_TIMESTAMP_TYPE}
+     * 参数 baseOffset: 消息的基准位移
+     * 参数 logAppendTime: 消息追加时间
+     * 参数 producerId: 生产者ID
+     * 参数 producerEpoch: 生产者的epoch
+     * 参数 baseSequence: 基准序列号
+     * 参数 isTransactional: 是否为事务消息
+     * 参数 isControlBatch: 是否为控制的消息
+     * 参数 partitionLeaderEpoch: 分区的leader epoch
+     * 参数 writeLimit: 写入的字节数大小限制(如果使用了压缩, 那么实际写入可以超过此值, 因为预测的字节数是不准的)
+     * @return MemoryRecordsBuilder
      */
     public MemoryRecordsBuilder(ByteBuffer buffer,
                                 byte magic,
@@ -198,7 +223,9 @@ public class MemoryRecordsBuilder {
         if (aborted) {
             throw new IllegalStateException("Attempting to build an aborted record batch");
         }
+        //调用close方法结束, 并生成转换后的消息
         close();
+
         return builtRecords;
     }
 
@@ -241,6 +268,7 @@ public class MemoryRecordsBuilder {
 
     /**
      * Return the sum of the size of the batch header (always uncompressed) and the records (before compression).
+     * 返回batch的头部(通常为未压缩)和压缩前的记录字节数
      */
     public int uncompressedBytesWritten() {
         return uncompressedRecordsSizeInBytes + batchHeaderSizeInBytes;
@@ -269,6 +297,8 @@ public class MemoryRecordsBuilder {
     /**
      * Release resources required for record appends (e.g. compression buffers). Once this method is called, it's only
      * possible to update the RecordBatch header.
+     *
+     * 释放追加记录的资源(例如用于压缩的buffer). 调用此方法之后, 只能更新RecordBatch的头部信息
      */
     public void closeForRecordAppends() {
         if (appendStream != CLOSED_STREAM) {
@@ -303,22 +333,28 @@ public class MemoryRecordsBuilder {
         if (aborted)
             throw new IllegalStateException("Cannot close MemoryRecordsBuilder as it has already been aborted");
 
+        //幂等处理
         if (builtRecords != null)
             return;
 
+        //校验生产者的信息
         validateProducerState();
 
+        //释放追加记录所使用的资源
         closeForRecordAppends();
 
         if (numRecords == 0L) {
+            //如果没有写入任何消息, 那么生成空的MemoryRecords
             buffer().position(initialPosition);
             builtRecords = MemoryRecords.EMPTY;
         } else {
+            //写入消息的头部
             if (magic > RecordBatch.MAGIC_VALUE_V1)
                 this.actualCompressionRatio = (float) writeDefaultBatchHeader() / this.uncompressedRecordsSizeInBytes;
             else if (compressionType != CompressionType.NONE)
                 this.actualCompressionRatio = (float) writeLegacyCompressedWrapperHeader() / this.uncompressedRecordsSizeInBytes;
 
+            //生成转换后的记录
             ByteBuffer buffer = buffer().duplicate();
             buffer.flip();
             buffer.position(initialPosition);
@@ -326,6 +362,9 @@ public class MemoryRecordsBuilder {
         }
     }
 
+    /**
+     * 校验生产者的信息
+     */
     private void validateProducerState() {
         if (isTransactional && producerId == RecordBatch.NO_PRODUCER_ID)
             throw new IllegalArgumentException("Cannot write transactional messages without a valid producer ID");
@@ -345,16 +384,24 @@ public class MemoryRecordsBuilder {
     /**
      * Write the header to the default batch.
      * @return the written compressed bytes.
+     *
+     * 写入header, 并返回写入的压缩字节数
      */
     private int writeDefaultBatchHeader() {
+        //检查是否已经close
         ensureOpenForRecordBatchWrite();
+
         ByteBuffer buffer = bufferStream.buffer();
+        //计算写入的压缩字节数
         int pos = buffer.position();
         buffer.position(initialPosition);
         int size = pos - initialPosition;
+        //压缩消息的大小, 不包含RecordBatch的头部
         int writtenCompressed = size - DefaultRecordBatch.RECORD_BATCH_OVERHEAD;
+        //计算最后写入的消息与最初写入的消息位移差值
         int offsetDelta = (int) (lastOffset - baseOffset);
 
+        //计算最大时间戳, 如果时间戳类型为LogAppendTime则为当前的追加时间, 否则为batch中创建消息时最大的时间戳
         final long maxTimestamp;
         if (timestampType == TimestampType.LOG_APPEND_TIME)
             maxTimestamp = logAppendTime;
@@ -372,17 +419,24 @@ public class MemoryRecordsBuilder {
     /**
      * Write the header to the legacy batch.
      * @return the written compressed bytes.
+     *
+     * 写入老版本消息的头部, 并返回写入的压缩字节数
      */
     private int writeLegacyCompressedWrapperHeader() {
+        //检查是否close
         ensureOpenForRecordBatchWrite();
+
         ByteBuffer buffer = bufferStream.buffer();
         int pos = buffer.position();
         buffer.position(initialPosition);
 
+        //计算写入的压缩字节数
         int wrapperSize = pos - initialPosition - Records.LOG_OVERHEAD;
         int writtenCompressed = wrapperSize - LegacyRecord.recordOverhead(magic);
+        //写入位移和包含有magic值的压缩字节数
         AbstractLegacyRecordBatch.writeHeader(buffer, lastOffset, wrapperSize);
 
+        //写入消息头部
         long timestamp = timestampType == TimestampType.LOG_APPEND_TIME ? logAppendTime : maxTimestamp;
         LegacyRecord.writeCompressedRecordHeader(buffer, magic, wrapperSize, timestamp, compressionType, timestampType);
 
@@ -392,6 +446,8 @@ public class MemoryRecordsBuilder {
 
     /**
      * Append a record and return its checksum for message format v0 and v1, or null for v2 and above.
+     *
+     * 追加消息记录, 对于v0或v1版本的消息返回校验和, v2或更高版本返回null
      */
     private Long appendWithOffset(long offset, boolean isControlRecord, long timestamp, ByteBuffer key,
                                   ByteBuffer value, Header[] headers) {
@@ -413,9 +469,11 @@ public class MemoryRecordsBuilder {
                 firstTimestamp = timestamp;
 
             if (magic > RecordBatch.MAGIC_VALUE_V1) {
+                //版本大于v1的消息写入(使用相对值和变长整数压缩来减少存储空间)
                 appendDefaultRecord(offset, timestamp, key, value, headers);
                 return null;
             } else {
+                //老版本的消息写入
                 return appendLegacyRecord(offset, timestamp, key, value);
             }
         } catch (IOException e) {
@@ -444,6 +502,8 @@ public class MemoryRecordsBuilder {
      * @param value The record value
      * @param headers The record headers if there are any
      * @return CRC of the record or null if record-level CRC is not supported for the message format
+     *
+     * 使用指定位移追加消息记录
      */
     public Long appendWithOffset(long offset, long timestamp, ByteBuffer key, ByteBuffer value, Header[] headers) {
         return appendWithOffset(offset, false, timestamp, key, value, headers);
@@ -597,6 +657,10 @@ public class MemoryRecordsBuilder {
      * Append a log record using a different offset
      * @param offset The offset of the record
      * @param record The record to add
+     *
+     * 使用参数中的位移追加消息.
+     * 参数 offset: 记录的位移
+     * 参数 record: 消息记录
      */
     public void appendWithOffset(long offset, Record record) {
         appendWithOffset(offset, record.timestamp(), record.key(), record.value(), record.headers());
@@ -624,34 +688,63 @@ public class MemoryRecordsBuilder {
     private void appendDefaultRecord(long offset, long timestamp, ByteBuffer key, ByteBuffer value,
                                      Header[] headers) throws IOException {
         ensureOpenForRecordAppend();
+        //位移相对值(相对于batch的起始值)
         int offsetDelta = (int) (offset - baseOffset);
+        //时间戳相对值(相对于batch的起始值)
         long timestampDelta = timestamp - firstTimestamp;
+        //写入消息
         int sizeInBytes = DefaultRecord.writeTo(appendStream, offsetDelta, timestampDelta, key, value, headers);
+        //更新写入的信息
         recordWritten(offset, timestamp, sizeInBytes);
     }
 
+    /**
+     * 小于或等于v1版本的追加消息记录方法
+     * @param offset
+     * @param timestamp
+     * @param key
+     * @param value
+     * @return
+     * @throws IOException
+     */
     private long appendLegacyRecord(long offset, long timestamp, ByteBuffer key, ByteBuffer value) throws IOException {
         ensureOpenForRecordAppend();
+        //设置时间戳
         if (compressionType == CompressionType.NONE && timestampType == TimestampType.LOG_APPEND_TIME)
             timestamp = logAppendTime;
 
+        //评估写入的数据大小
         int size = LegacyRecord.recordSize(magic, key, value);
+
+        //写入位移及数据大小
         AbstractLegacyRecordBatch.writeHeader(appendStream, toInnerOffset(offset), size);
 
+        //设置时间戳(上面也设置了时间戳, 应该以这里的判断条件为准)
         if (timestampType == TimestampType.LOG_APPEND_TIME)
             timestamp = logAppendTime;
+
+        //写入消息, 并返回校验和
         long crc = LegacyRecord.write(appendStream, magic, timestamp, key, value, CompressionType.NONE, timestampType);
+
+        //更新写入的信息
         recordWritten(offset, timestamp, size + Records.LOG_OVERHEAD);
         return crc;
     }
 
     private long toInnerOffset(long offset) {
         // use relative offsets for compressed messages with magic v1
+        // 对于v1及以上版本的压缩消息使用相对位移
         if (magic > 0 && compressionType != CompressionType.NONE)
             return offset - baseOffset;
         return offset;
     }
 
+    /**
+     * 更新写入的信息
+     * @param offset
+     * @param timestamp
+     * @param size
+     */
     private void recordWritten(long offset, long timestamp, int size) {
         if (numRecords == Integer.MAX_VALUE)
             throw new IllegalArgumentException("Maximum number of records per batch exceeded, max records: " + Integer.MAX_VALUE);
@@ -659,10 +752,14 @@ public class MemoryRecordsBuilder {
             throw new IllegalArgumentException("Maximum offset delta exceeded, base offset: " + baseOffset +
                     ", last offset: " + offset);
 
+        //增加写入记录数
         numRecords += 1;
+        //记录写入记录的字节数大小
         uncompressedRecordsSizeInBytes += size;
+        //记录batch的最后位移
         lastOffset = offset;
 
+        //记录最大时间戳及其位移
         if (magic > RecordBatch.MAGIC_VALUE_V0 && timestamp > maxTimestamp) {
             maxTimestamp = timestamp;
             offsetOfMaxTimestamp = offset;

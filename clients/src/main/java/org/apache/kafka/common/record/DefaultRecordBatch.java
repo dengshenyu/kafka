@@ -92,6 +92,48 @@ import static org.apache.kafka.common.record.Records.LOG_OVERHEAD;
  *  -------------------------------------------------------------------------------------------------
  *  | Unused (6-15) | Control (5) | Transactional (4) | Timestamp Type (3) | Compression Type (0-2) |
  *  -------------------------------------------------------------------------------------------------
+ *
+ *
+ * magic值为2或更高的RecordBatch实现, 格式如下:
+ * RecordBatch =>
+ *  BaseOffset => Int64
+ *  Length => Int32
+ *  PartitionLeaderEpoch => Int32
+ *  Magic => Int8
+ *  CRC => Uint32
+ *  Attributes => Int16
+ *  LastOffsetDelta(或LastSequenceDelta) => Int32
+ *  FirstTimestamp => Int64
+ *  MaxTimestamp => Int64
+ *  ProducerId => Int64
+ *  ProducerEpoch => Int16
+ *  BaseSequence => Int32
+ *  Records => [Record]
+ *
+ *  如果使用了压缩(见下面Attributes的格式), 那么压缩的记录数据会紧跟在记录个数之后.
+ *
+ *  CRC校验和覆盖了从Attributes到最后的数据(也就是所有跟在CRC之后的数据). CRC没有把分区leader epoch字段计算在内, 这是为了避免
+ *  由于每个batch都设置了leader epoch而导致CRC重复计算. CRC-32C使用的是CRC-32C (Castagnoli) 算法.
+ *
+ *  Kafka Compaction: 在做Compaction时, V2及更高版本仍然会保持原batch中的最初和最后的位移(和序列号), 这是为了在reload时重建
+ *  生产者的状态. 如果不保持最后的序列号, 那么一旦发生分区leader故障而新的leader重建了生产者状态, 此leader所期望的下一个序列号与
+ *  客户端写入的序列号将不能保持一致, 从而导致OutOfOrderSequence异常. 而为了检查是否消息重复发送, 最初的序列号也必须保持: broker通过
+ *  检查batch的最初和最后的序列号, 并与上一个batch比较, 来发现是否消息重复发送
+ *
+ *  另外, 即使由于Compaction而导致一个batch的所有记录都被删除, broker仍然会保留一个空的batch头部, 这是为了保留上面提到的生产者序列号.
+ *  这些空的batch会一直保留, 直到batch的生产者写入了一个新的序列号或者broker中的producerId由于长时间不发送消息而过期了.
+ *
+ *  相比之下, 原batch的时间戳则没有保留的需要, 因此FirstTimestamp字段通常用来表示batch中第一个记录的时间戳, 如果batch为空, 那么此
+ *  字段会被设置为-1(NO_TIMESTAMP)
+ *
+ *  如果时间戳类型为CREATE_TIME, 那么MaxTimestamp字段表示当前记录的最大时间戳; 如果为LOG_APPEND_TIME, 那么MaxTimestamp表示
+ *  broker所设置的时间, 而在Compaction之后此字段保留使用. 另外, 空batch的MaxTimestamp字段会保持与原来的一样.
+ *
+ *  当前的Attributes格式如下:
+ *
+ *  -------------------------------------------------------------------------------------------------
+ *  | Unused (6-15) | Control (5) | Transactional (4) | Timestamp Type (3) | Compression Type (0-2) |
+ *  -------------------------------------------------------------------------------------------------
  */
 public class DefaultRecordBatch extends AbstractRecordBatch implements MutableRecordBatch {
     static final int BASE_OFFSET_OFFSET = 0;
@@ -429,6 +471,25 @@ public class DefaultRecordBatch extends AbstractRecordBatch implements MutableRe
                 producerEpoch, baseSequence, isTransactional, isControlRecord, partitionLeaderEpoch, 0);
     }
 
+    /**
+     * 写入RecordBatch的头部(格式见此类的顶部注释)
+     * @param buffer
+     * @param baseOffset
+     * @param lastOffsetDelta
+     * @param sizeInBytes
+     * @param magic
+     * @param compressionType
+     * @param timestampType
+     * @param firstTimestamp
+     * @param maxTimestamp
+     * @param producerId
+     * @param epoch
+     * @param sequence
+     * @param isTransactional
+     * @param isControlBatch
+     * @param partitionLeaderEpoch
+     * @param numRecords
+     */
     static void writeHeader(ByteBuffer buffer,
                             long baseOffset,
                             int lastOffsetDelta,
@@ -481,6 +542,7 @@ public class DefaultRecordBatch extends AbstractRecordBatch implements MutableRe
         if (!iterator.hasNext())
             return 0;
 
+        //batch内使用相对值, 并且通过ZigZag-Encoding编码来减少存储空间
         int size = RECORD_BATCH_OVERHEAD;
         Long firstTimestamp = null;
         while (iterator.hasNext()) {

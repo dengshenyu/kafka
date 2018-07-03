@@ -171,6 +171,7 @@ public class DefaultRecord implements Record {
 
     /**
      * Write the record to `out` and return its size.
+     * 写入记录到out中, 并返回写入的大小
      */
     public static int writeTo(DataOutputStream out,
                               int offsetDelta,
@@ -178,26 +179,37 @@ public class DefaultRecord implements Record {
                               ByteBuffer key,
                               ByteBuffer value,
                               Header[] headers) throws IOException {
+        //写入body的长度
         int sizeInBytes = sizeOfBodyInBytes(offsetDelta, timestampDelta, key, value, headers);
         ByteUtils.writeVarint(sizeInBytes, out);
 
+        /*
+         * 以下写入body
+         */
+        //新的消息格式没有使用到attribute位(对比老版本的消息写入方法)
         byte attributes = 0; // there are no used record attributes at the moment
         out.write(attributes);
 
+        //写入时间戳相对值
         ByteUtils.writeVarlong(timestampDelta, out);
+        //写入位移相对值
         ByteUtils.writeVarint(offsetDelta, out);
 
         if (key == null) {
+            //如果消息没有key则写入-1
             ByteUtils.writeVarint(-1, out);
         } else {
+            //消息有key, 则先写入key大小, 再写入key
             int keySize = key.remaining();
             ByteUtils.writeVarint(keySize, out);
             Utils.writeTo(out, key, keySize);
         }
 
         if (value == null) {
+            //如果消息没有value则写入-1
             ByteUtils.writeVarint(-1, out);
         } else {
+            //如果消息有value, 则先写入大小, 再写入value
             int valueSize = value.remaining();
             ByteUtils.writeVarint(valueSize, out);
             Utils.writeTo(out, value, valueSize);
@@ -206,17 +218,20 @@ public class DefaultRecord implements Record {
         if (headers == null)
             throw new IllegalArgumentException("Headers cannot be null");
 
+        //写入header大小
         ByteUtils.writeVarint(headers.length, out);
-
+        //循环写入header
         for (Header header : headers) {
             String headerKey = header.key();
             if (headerKey == null)
                 throw new IllegalArgumentException("Invalid null header key found in headers");
 
+            //写入头部的key
             byte[] utf8Bytes = Utils.utf8(headerKey);
             ByteUtils.writeVarint(utf8Bytes.length, out);
             out.write(utf8Bytes);
 
+            //写入头部的value
             byte[] headerValue = header.value();
             if (headerValue == null) {
                 ByteUtils.writeVarint(-1, out);

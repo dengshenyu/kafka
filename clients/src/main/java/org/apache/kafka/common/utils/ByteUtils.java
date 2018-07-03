@@ -229,6 +229,9 @@ public final class ByteUtils {
      *
      * @param value The value to write
      * @param out The output to write to
+     *
+     * 使用变长zig-zag编码来减少整数字节数
+     * zig-zag统一用自然数来编码全体整数: (0 = 0, -1 = 1, 1 = 2, -2 = 3, 2 = 4, -3 = 5, 3 = 6 ...)
      */
     public static void writeVarint(int value, DataOutput out) throws IOException {
         int v = (value << 1) ^ (value >> 31);
@@ -264,6 +267,9 @@ public final class ByteUtils {
      *
      * @param value The value to write
      * @param out The output to write to
+     *
+     * 使用变长zig-zag编码来减少整数字节数
+     * zig-zag统一用自然数来编码全体整数: (0 = 0, -1 = 1, 1 = 2, -2 = 3, 2 = 4, -3 = 5, 3 = 6 ...)
      */
     public static void writeVarlong(long value, DataOutput out) throws IOException {
         long v = (value << 1) ^ (value >> 63);

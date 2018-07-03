@@ -579,6 +579,8 @@ class ProducerStateManager(val topicPartition: TopicPartition,
 
   /**
    * Expire any producer ids which have been idle longer than the configured maximum expiration timeout.
+   *
+   * 将空闲时间超过最大超时时间的生产者移除
    */
   def removeExpiredProducers(currentTimeMs: Long) {
     producers.retain { case (_, lastEntry) =>
@@ -591,13 +593,16 @@ class ProducerStateManager(val topicPartition: TopicPartition,
    * snapshot in range (if there is one). Note that the log end offset is assumed to be less than
    * or equal to the high watermark.
    */
+  //只保留最后写入消息位移为(logStartOffset, logEndOffset]之间的生产者信息
   def truncateAndReload(logStartOffset: Long, logEndOffset: Long, currentTimeMs: Long) {
     // remove all out of range snapshots
+    //删除不在(logStartOffset, logEndOffset]之间的生产者快照文件
     deleteSnapshotFiles(logDir, { snapOffset =>
       snapOffset > logEndOffset || snapOffset <= logStartOffset
     })
 
     if (logEndOffset != mapEndOffset) {
+      //重新从快照文件中恢复生产者信息
       producers.clear()
       ongoingTxns.clear()
 
@@ -606,6 +611,7 @@ class ProducerStateManager(val topicPartition: TopicPartition,
       unreplicatedTxns.clear()
       loadFromSnapshot(logStartOffset, currentTimeMs)
     } else {
+      //删除老的生产者信息
       truncateHead(logStartOffset)
     }
   }
@@ -693,21 +699,34 @@ class ProducerStateManager(val topicPartition: TopicPartition,
    * Note that snapshots from offsets greater than the log start offset may have producers included which
    * should no longer be retained: these producers will be removed if and when we need to load state from
    * the snapshot.
+   *
    */
+  //1)删除最后写入消息比logStartOffset还老的生产者(和它的事务)、未完成复制的事务;
+  //2)删除比logStartOffset还老的生产者快照文件
   def truncateHead(logStartOffset: Long) {
+    //找出最后写入消息比logStartOffset还老的生产者列表
     val evictedProducerEntries = producers.filter { case (_, producerState) =>
       !isProducerRetained(producerState, logStartOffset)
     }
     val evictedProducerIds = evictedProducerEntries.keySet
 
+    //删除这些失效的生产者
     producers --= evictedProducerIds
+
+    //删除这些生产者的正在执行的事务
     removeEvictedOngoingTransactions(evictedProducerIds)
+
+    //删除比logStartOffset还老而且仍未完成复制的事务
     removeUnreplicatedTransactions(logStartOffset)
 
+    //校准logMapOffset
     if (lastMapOffset < logStartOffset)
       lastMapOffset = logStartOffset
 
+    //删除比logStartOffset还老的生产者快照文件
     deleteSnapshotsBefore(logStartOffset)
+
+    //校准lastSnapOffset
     lastSnapOffset = latestSnapshotOffset.getOrElse(logStartOffset)
   }
 

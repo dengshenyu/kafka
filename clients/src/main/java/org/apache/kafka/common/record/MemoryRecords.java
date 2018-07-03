@@ -480,6 +480,22 @@ public class MemoryRecords extends AbstractRecords {
                 producerId, producerEpoch, baseSequence, false, RecordBatch.NO_PARTITION_LEADER_EPOCH);
     }
 
+    /**
+     * 生成一个MemoryRecordsBuilder
+     *
+     * 参数 buffer: 存储转换后数据的缓冲区(如果此缓冲区大小与实际追加的记录大小不符, 那么此类会新创建一个缓冲区)
+     * 参数 magic: 使用的消息格式版本
+     * 参数 compressionType: 使用的压缩类型
+     * 参数 timestampType: 使用的时间戳类型, "消息创建时间戳"或"消息追加时间戳", 对于magic值 > 0的消息来说, 此值不能取{@link TimestampType#NO_TIMESTAMP_TYPE}
+     * 参数 baseOffset: 消息的基准位移
+     * 参数 logAppendTime: 消息追加时间
+     * 参数 producerId: 生产者ID
+     * 参数 producerEpoch: 生产者的epoch
+     * 参数 baseSequence: 基准序列号
+     * 参数 isTransactional: 是否为事务消息
+     * 参数 partitionLeaderEpoch: 分区的leader epoch
+     * @return MemoryRecordsBuilder
+     */
     public static MemoryRecordsBuilder builder(ByteBuffer buffer,
                                                byte magic,
                                                CompressionType compressionType,
@@ -495,6 +511,23 @@ public class MemoryRecords extends AbstractRecords {
                 logAppendTime, producerId, producerEpoch, baseSequence, isTransactional, false, partitionLeaderEpoch);
     }
 
+    /**
+    * 生成一个MemoryRecordsBuilder
+    *
+    * 参数 buffer: 存储转换后数据的缓冲区(如果此缓冲区大小与实际追加的记录大小不符, 那么此类会新创建一个缓冲区)
+    * 参数 magic: 使用的消息格式版本
+    * 参数 compressionType: 使用的压缩类型
+    * 参数 timestampType: 使用的时间戳类型, "消息创建时间戳"或"消息追加时间戳", 对于magic值 > 0的消息来说, 此值不能取{@link TimestampType#NO_TIMESTAMP_TYPE}
+    * 参数 baseOffset: 消息的基准位移
+    * 参数 logAppendTime: 消息追加时间
+    * 参数 producerId: 生产者ID
+    * 参数 producerEpoch: 生产者的epoch
+    * 参数 baseSequence: 基准序列号
+    * 参数 isTransactional: 是否为事务消息
+    * 参数 isControlBatch: 是否为控制的消息
+    * 参数 partitionLeaderEpoch: 分区的leader epoch
+    * @return MemoryRecordsBuilder
+    */
     public static MemoryRecordsBuilder builder(ByteBuffer buffer,
                                                byte magic,
                                                CompressionType compressionType,
