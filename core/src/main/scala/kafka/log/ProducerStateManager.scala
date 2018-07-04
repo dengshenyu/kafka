@@ -112,10 +112,17 @@ private[log] class ProducerStateEntry(val producerId: Long,
   def isEmpty: Boolean = batchMetadata.isEmpty
 
   def addBatch(producerEpoch: Short, lastSeq: Int, lastOffset: Long, offsetDelta: Int, timestamp: Long): Unit = {
+    //处理epoch更新
     maybeUpdateEpoch(producerEpoch)
+    //更新batch元数据队列
     addBatchMetadata(BatchMetadata(lastSeq, lastOffset, offsetDelta, timestamp))
   }
 
+  /**
+   * 处理epoch更新
+   * @param producerEpoch
+   * @return
+   */
   def maybeUpdateEpoch(producerEpoch: Short): Boolean = {
     if (this.producerEpoch != producerEpoch) {
       batchMetadata.clear()
@@ -126,6 +133,9 @@ private[log] class ProducerStateEntry(val producerId: Long,
     }
   }
 
+    /**
+     * 更新最近追加的batch元数据队列
+     */
   private def addBatchMetadata(batch: BatchMetadata): Unit = {
     if (batchMetadata.size == ProducerStateEntry.NumBatchesToRetain)
       batchMetadata.dequeue()
@@ -142,6 +152,11 @@ private[log] class ProducerStateEntry(val producerId: Long,
 
   def removeBatchesOlderThan(offset: Long): Unit = batchMetadata.dropWhile(_.lastOffset < offset)
 
+  /**
+   * 查找缓存中拥有相同序列号区间的batch
+   * @param batch
+   * @return
+   */
   def findDuplicateBatch(batch: RecordBatch): Option[BatchMetadata] = {
     if (batch.producerEpoch != producerEpoch)
        None
@@ -150,6 +165,7 @@ private[log] class ProducerStateEntry(val producerId: Long,
   }
 
   // Return the batch metadata of the cached batch having the exact sequence range, if any.
+  // 返回拥有相同序列号区间的batch元数据
   def batchWithSequenceRange(firstSeq: Int, lastSeq: Int): Option[BatchMetadata] = {
     val duplicate = batchMetadata.filter { metadata =>
       firstSeq == metadata.firstSeq && lastSeq == metadata.lastSeq
@@ -182,6 +198,13 @@ private[log] class ProducerStateEntry(val producerId: Long,
  *                       coming from the producer should have ValidationType.EpochOnly. Appends which aren't from a client
  *                       should have ValidationType.None. Appends coming from a client for produce requests should have
  *                       ValidationType.Full.
+ * 此类用来验证生产者追加记录的合法性. 此类会在最后一次成功追加后进行初始化, 并不断验证及更新此后每个记录的序列号和epoch.
+ * 另外, 此类在验证接收到的记录后会收集事务信息
+ * 参数 producerId: 追加日志的生产者ID
+ * 参数 currentEntry: 包含此生产者最近追加的记录元信息, 新的追加请求会与此结构中的最后追加信息进行比较进行验证, 而且新的追加会替代
+ *                    此结构中的老数据以保持常量的空间
+ * 参数 validationType: 指定校验的范围. 生产者的位移提交请求为ValidationType.EpochOnly, 非client的追加请求为ValidationType.None,
+ *                    client的追加请求为ValidationType.Full
  */
 private[log] class ProducerAppendInfo(val producerId: Long,
                                       val currentEntry: ProducerStateEntry,
@@ -193,6 +216,11 @@ private[log] class ProducerAppendInfo(val producerId: Long,
   updatedEntry.coordinatorEpoch = currentEntry.coordinatorEpoch
   updatedEntry.currentTxnFirstOffset = currentEntry.currentTxnFirstOffset
 
+  /**
+   * 校验生产者状态
+   * @param producerEpoch
+   * @param firstSeq
+   */
   private def maybeValidateAppend(producerEpoch: Short, firstSeq: Int) = {
     validationType match {
       case ValidationType.None =>
@@ -249,24 +277,37 @@ private[log] class ProducerAppendInfo(val producerId: Long,
 
   def append(batch: RecordBatch): Option[CompletedTxn] = {
     if (batch.isControlBatch) {
+      //控制消息
       val record = batch.iterator.next()
       val endTxnMarker = EndTransactionMarker.deserialize(record)
       val completedTxn = appendEndTxnMarker(endTxnMarker, batch.producerEpoch, batch.baseOffset, record.timestamp)
       Some(completedTxn)
     } else {
+      //普通消息
       append(batch.producerEpoch, batch.baseSequence, batch.lastSequence, batch.maxTimestamp, batch.lastOffset,
         batch.isTransactional)
       None
     }
   }
 
+  /**
+   * 追加普通消息
+   * @param epoch
+   * @param firstSeq
+   * @param lastSeq
+   * @param lastTimestamp
+   * @param lastOffset
+   * @param isTransactional
+   */
   def append(epoch: Short,
              firstSeq: Int,
              lastSeq: Int,
              lastTimestamp: Long,
              lastOffset: Long,
              isTransactional: Boolean): Unit = {
+    //校验消息
     maybeValidateAppend(epoch, firstSeq)
+    //根据新的batch更新此生产者新增数据的信息
     updatedEntry.addBatch(epoch, lastSeq, lastOffset, lastSeq - firstSeq, lastTimestamp)
 
     updatedEntry.currentTxnFirstOffset match {
@@ -284,6 +325,15 @@ private[log] class ProducerAppendInfo(val producerId: Long,
     }
   }
 
+  /**
+   * 追加事务结束标记
+   *
+   * @param endTxnMarker
+   * @param producerEpoch
+   * @param offset
+   * @param timestamp
+   * @return
+   */
   def appendEndTxnMarker(endTxnMarker: EndTransactionMarker,
                          producerEpoch: Short,
                          offset: Long,
@@ -658,6 +708,7 @@ class ProducerStateManager(val topicPartition: TopicPartition,
 
   /**
    * Get the last written entry for the given producer id.
+   * 根据生产者ID获取最后写入的信息
    */
   def lastEntry(producerId: Long): Option[ProducerStateEntry] = producers.get(producerId)
 

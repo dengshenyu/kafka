@@ -72,6 +72,21 @@ object LogAppendInfo {
  * @param validBytes The number of valid bytes
  * @param offsetsMonotonic Are the offsets in this message set monotonically increasing
  * @param lastOffsetOfFirstBatch The last offset of the first batch
+ *
+ * 在追加消息到日志前用来保存计算出来的各种信息的结构体
+ * 参数 firstOffset: 消息集的第一个消息位移(小于V2版本且为追加到Follower中时除外)
+ * 参数 lastOffset: 消息集的最后位移
+ * 参数 maxTimestamp: 消息集的最大时间戳
+ * 参数 offsetOfMaxTimestamp: 最大时间戳所对应的消息位移
+ * 参数 logAppendTime: 消息集的日志追加时间, 或者为Message.NoTimestamp(如果此字段没有使用的话)
+ * 参数 logStartOffset: 追加时此分区日志的最老位移
+ * 参数 recordConversionStats: 消息记录处理的指标统计, 如果assignOffsets设置为false则此字段为null
+ * 参数 sourceCodec: 消息集的原编码(由生产者设置)
+ * 参数 targetCodec: 消息集的目标编码(如果broker设置了压缩的话)
+ * 参数 shallowCount: 消息集中batch的个数
+ * 参数 validBytes: 有效字节数
+ * 参数 offsetsMonotonic: 消息集的位移是否为单调递增
+ * 参数 lastOffsetOfFirstBatch: 第一个batch的最后位移
  */
 case class LogAppendInfo(var firstOffset: Option[Long],
                          var lastOffset: Long,
@@ -981,16 +996,19 @@ class Log(@volatile var dir: File,
             case e: IOException =>
               throw new KafkaException(s"Error validating messages while appending to log $name", e)
           }
+          //获取设置位移后的消息记录, 最大时间戳(及其位移), 最大消息位移, 以及
           validRecords = validateAndOffsetAssignResult.validatedRecords
           appendInfo.maxTimestamp = validateAndOffsetAssignResult.maxTimestamp
           appendInfo.offsetOfMaxTimestamp = validateAndOffsetAssignResult.shallowOffsetOfMaxTimestamp
           appendInfo.lastOffset = offset.value - 1
           appendInfo.recordConversionStats = validateAndOffsetAssignResult.recordConversionStats
+          //如果时间戳设置为LogAppendTime, 那么设置其时间为现在
           if (config.messageTimestampType == TimestampType.LOG_APPEND_TIME)
             appendInfo.logAppendTime = now
 
           // re-validate message sizes if there's a possibility that they have changed (due to re-compression or message
           // format conversion)
+          // 在(可能的)再压缩和消息格式转换后, 重新验证消息大小是否超过上限
           if (validateAndOffsetAssignResult.messageSizeMaybeChanged) {
             for (batch <- validRecords.batches.asScala) {
               if (batch.sizeInBytes > config.maxMessageSize) {
@@ -1004,11 +1022,13 @@ class Log(@volatile var dir: File,
             }
           }
         } else {
-          // we are taking the offsets we are given
+          // 直接使用消息中存在的位移
+
           if (!appendInfo.offsetsMonotonic)
             throw new OffsetsOutOfOrderException(s"Out of order offsets found in append to $topicPartition: " +
                                                  records.records.asScala.map(_.offset))
 
+          // 如果消息中的第一个位移比nextOffsetMetadata小, 那么抛出UnexpectedAppendOffsetException异常
           if (appendInfo.firstOrLastOffsetOfFirstBatch < nextOffsetMetadata.messageOffset) {
             // we may still be able to recover if the log is empty
             // one example: fetching from log start offset on the leader which is not batch aligned,
@@ -1029,12 +1049,14 @@ class Log(@volatile var dir: File,
         }
 
         // update the epoch cache with the epoch stamped onto the message by the leader
+        // 根据消息中设置的leader epoch, 更新epoch缓存
         validRecords.batches.asScala.foreach { batch =>
           if (batch.magic >= RecordBatch.MAGIC_VALUE_V2)
             _leaderEpochCache.assign(batch.partitionLeaderEpoch, batch.baseOffset)
         }
 
         // check messages set size may be exceed config.segmentSize
+        // 如果记录大小超过了日志段, 那么抛出RecordBatchTooLargeException异常
         if (validRecords.sizeInBytes > config.segmentSize) {
           throw new RecordBatchTooLargeException(s"Message batch size is ${validRecords.sizeInBytes} bytes in append " +
             s"to partition $topicPartition, which exceeds the maximum configured segment size of ${config.segmentSize}.")
@@ -1146,15 +1168,21 @@ class Log(@volatile var dir: File,
     }
   }
 
+  /**
+   * 校验生产者状态
+   * @param records
+   * @param isFromClient
+   * @return
+   */
   private def analyzeAndValidateProducerState(records: MemoryRecords, isFromClient: Boolean):
   (mutable.Map[Long, ProducerAppendInfo], List[CompletedTxn], Option[BatchMetadata]) = {
     val updatedProducers = mutable.Map.empty[Long, ProducerAppendInfo]
     val completedTxns = ListBuffer.empty[CompletedTxn]
     for (batch <- records.batches.asScala if batch.hasProducerId) {
+      //获取此生产者最后写入的信息
       val maybeLastEntry = producerStateManager.lastEntry(batch.producerId)
 
-      // if this is a client produce request, there will be up to 5 batches which could have been duplicated.
-      // If we find a duplicate, we return the metadata of the appended batch to the client.
+      // 如果请求来源于client, 那么如果为重复请求直接返回之前追加的batch元信息
       if (isFromClient) {
         maybeLastEntry.flatMap(_.findDuplicateBatch(batch)).foreach { duplicate =>
           return (updatedProducers, completedTxns.toList, Some(duplicate))
@@ -1282,7 +1310,7 @@ class Log(@volatile var dir: File,
   }
 
   /**
-   * 更新生产者信息
+   * 更新生产者的追加信息
    * @param batch
    * @param producers
    * @param isFromClient
