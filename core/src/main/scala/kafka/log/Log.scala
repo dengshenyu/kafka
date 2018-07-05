@@ -1064,7 +1064,10 @@ class Log(@volatile var dir: File,
 
         // now that we have valid records, offsets assigned, and timestamps updated, we need to
         // validate the idempotent/transactional state of the producers and collect some metadata
+        // 现在已经验证了记录合法性, 设置了位移, 并且更新了时间戳, 现在验证生产者的事务状态并收集一些元信息
         val (updatedProducers, completedTxns, maybeDuplicate) = analyzeAndValidateProducerState(validRecords, isFromClient)
+
+        //如果为重复消息, 那么使用之前记录的信息更新此次追加的appendInfo
         maybeDuplicate.foreach { duplicate =>
           appendInfo.firstOffset = Some(duplicate.firstOffset)
           appendInfo.lastOffset = duplicate.lastOffset
@@ -1074,6 +1077,7 @@ class Log(@volatile var dir: File,
         }
 
         // maybe roll the log if this segment is full
+        // 根据写入的消息大小判断是否需要日志滚动
         val segment = maybeRoll(validRecords.sizeInBytes, appendInfo)
 
         val logOffsetMetadata = LogOffsetMetadata(
@@ -1189,7 +1193,9 @@ class Log(@volatile var dir: File,
         }
       }
 
+      //更新生产者追加信息, 并且返回是否为事务结束
       val maybeCompletedTxn = updateProducers(batch, updatedProducers, isFromClient = isFromClient)
+      //更新事务信息
       maybeCompletedTxn.foreach(completedTxns += _)
     }
     (updatedProducers, completedTxns.toList, None)
@@ -1320,7 +1326,9 @@ class Log(@volatile var dir: File,
                               producers: mutable.Map[Long, ProducerAppendInfo],
                               isFromClient: Boolean): Option[CompletedTxn] = {
     val producerId = batch.producerId
+    //如果此生产者没有追加过消息则新生成一个ProducerAppendInfo, 否则返回之前的ProducerAppendInfo
     val appendInfo = producers.getOrElseUpdate(producerId, producerStateManager.prepareUpdate(producerId, isFromClient))
+    //更新appendInfo
     appendInfo.append(batch)
   }
 
@@ -1685,6 +1693,14 @@ class Log(@volatile var dir: File,
    * <li> The index is full
    * </ol>
    * @return The currently active segment after (perhaps) rolling to a new segment
+   *
+   * 判断是否需要滚动日志生成新的日志段, 如果需要则返回新的日志段, 否则返回老的日志段.
+   * 参数 messagesSize: 消息集的字节数
+   * 参数 appendInfo: 追加的相关信息
+   * 发生如下情况时, 会滚动日志段:
+   *   1) 日志段满了
+   *   2) 追加消息的时间与日志段第一条消息的时间(如果第一条消息没有时间戳, 则为创建时间)的差值超过了maxTime阈值
+   *   3) 日志索引满了
    */
   private def maybeRoll(messagesSize: Int, appendInfo: LogAppendInfo): LogSegment = {
     val segment = activeSegment
@@ -1694,6 +1710,8 @@ class Log(@volatile var dir: File,
     val maxOffsetInMessages = appendInfo.lastOffset
 
     if (segment.shouldRoll(messagesSize, maxTimestampInMessages, maxOffsetInMessages, now)) {
+      //如果需要滚动日志段, 那么调用roll方法进行滚动
+
       debug(s"Rolling new log segment (log_size = ${segment.size}/${config.segmentSize}}, " +
         s"offset_index_size = ${segment.offsetIndex.entries}/${segment.offsetIndex.maxEntries}, " +
         s"time_index_size = ${segment.timeIndex.entries}/${segment.timeIndex.maxEntries}, " +
@@ -1713,9 +1731,17 @@ class Log(@volatile var dir: File,
       */
       appendInfo.firstOffset match {
         case Some(firstOffset) => roll(firstOffset)
+
+        //(maxOffsetInMessages - Integer.MAX_VALUE)是消息集中第一条消息位移的启发标识. 由于消息集中位移差值不会超过Integer.MAX_VALUE,
+        //因此这个值可以保证小于等于消息集中的第一条消息位移. 获取消息集的真正第一条消息位移需要解压缩, 这个操作在follower上是尽量避免
+        //的行为. 之前的行为是使用老日志段的结束位移来设置新日志段的基准位移(即baseOffset = logEndOffset), 但老的做法在连续两条消息
+        //的位移差值为Integer.MAX_VALUE.toLong + 2(或者更大)时会有问题, 这会导致滚动生成的新日志段的基准位移太低而不能写入当前的消息.
+        //而这种情景是存在的, 比如一个副本机器试图恢复一个高度compact的主题.
+        //这些情况只会发生在V2版本以前的消息, 因为老版本不会在header中存储第一条消息的位移
         case None => roll(maxOffsetInMessages - Integer.MAX_VALUE)
       }
     } else {
+      //如果不需要滚动, 则返回当前的日志段
       segment
     }
   }

@@ -91,6 +91,8 @@ private[log] case class BatchMetadata(lastSeq: Int, lastOffset: Long, offsetDelt
 // the batchMetadata is ordered such that the batch with the lowest sequence is at the head of the queue while the
 // batch with the highest sequence is at the tail of the queue. We will retain at most ProducerStateEntry.NumBatchesToRetain
 // elements in the queue. When the queue is at capacity, we remove the first element to make space for the incoming batch.
+// batchMetadata是有序的队列, 低序列号的在前, 高序列号的在后. 使用这个结构来保持队列中最多有ProducerStateEntry.NumBatchesToRetain
+// 个元素, 当超过此阈值时, 删除老的元素同时增加新的元素.
 private[log] class ProducerStateEntry(val producerId: Long,
                                       val batchMetadata: mutable.Queue[BatchMetadata],
                                       var producerEpoch: Short,
@@ -234,6 +236,10 @@ private[log] class ProducerAppendInfo(val producerId: Long,
     }
   }
 
+  /**
+   * 检查生产者的epoch, 如果比之前的要老, 那么抛出ProducerFencedException异常
+   * @param producerEpoch
+   */
   private def checkProducerEpoch(producerEpoch: Short): Unit = {
     if (producerEpoch < updatedEntry.producerEpoch) {
       throw new ProducerFencedException(s"Producer's epoch is no longer valid. There is probably another producer " +
@@ -277,13 +283,13 @@ private[log] class ProducerAppendInfo(val producerId: Long,
 
   def append(batch: RecordBatch): Option[CompletedTxn] = {
     if (batch.isControlBatch) {
-      //控制消息
+      //事务结束消息
       val record = batch.iterator.next()
       val endTxnMarker = EndTransactionMarker.deserialize(record)
       val completedTxn = appendEndTxnMarker(endTxnMarker, batch.producerEpoch, batch.baseOffset, record.timestamp)
       Some(completedTxn)
     } else {
-      //普通消息
+      //非控制消息
       append(batch.producerEpoch, batch.baseSequence, batch.lastSequence, batch.maxTimestamp, batch.lastOffset,
         batch.isTransactional)
       None
@@ -312,11 +318,11 @@ private[log] class ProducerAppendInfo(val producerId: Long,
 
     updatedEntry.currentTxnFirstOffset match {
       case Some(_) if !isTransactional =>
-        // Received a non-transactional message while a transaction is active
+        // 如果在事务过程中接收到一个非事务的消息则抛出InvalidTxnStateException异常
         throw new InvalidTxnStateException(s"Expected transactional write from producer $producerId")
 
       case None if isTransactional =>
-        // Began a new transaction
+        // 开始一个新的事务
         val firstOffset = lastOffset - (lastSeq - firstSeq)
         updatedEntry.currentTxnFirstOffset = Some(firstOffset)
         transactions += new TxnMetadata(producerId, firstOffset)
@@ -326,7 +332,7 @@ private[log] class ProducerAppendInfo(val producerId: Long,
   }
 
   /**
-   * 追加事务结束标记
+   * 追加事务结束消息
    *
    * @param endTxnMarker
    * @param producerEpoch
@@ -338,12 +344,15 @@ private[log] class ProducerAppendInfo(val producerId: Long,
                          producerEpoch: Short,
                          offset: Long,
                          timestamp: Long): CompletedTxn = {
+    //检查生产者epoch
     checkProducerEpoch(producerEpoch)
 
+    //检查coordinatorEpoch
     if (updatedEntry.coordinatorEpoch > endTxnMarker.coordinatorEpoch)
       throw new TransactionCoordinatorFencedException(s"Invalid coordinator epoch: ${endTxnMarker.coordinatorEpoch} " +
         s"(zombie), ${updatedEntry.coordinatorEpoch} (current)")
 
+    //更新epoch
     updatedEntry.maybeUpdateEpoch(producerEpoch)
 
     val firstOffset = updatedEntry.currentTxnFirstOffset match {

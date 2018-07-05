@@ -48,6 +48,21 @@ import scala.math._
  * @param baseOffset A lower bound on the offsets in this segment
  * @param indexIntervalBytes The approximate number of bytes between entries in the index
  * @param time The time instance
+ *
+ * 一个日志段. 每个日志段有两部分: 日志本身和索引. 日志由包含真正消息的FileRecords组成, 索引则负责将消息位移转换成文件内的物理偏移.
+ * 每个日志段都有一个基准位移, 该基准位移小于等于此日志段中任何消息位移, 且大于之前日志段的任何消息位移.
+ *
+ * 假设日志段的基准位移为base_offset, 日志段会存储成两个文件, base_offset.index和base_offset.log文件.
+ * 参数 log: 日志记录
+ * 参数 offsetIndex: 位移索引
+ * 参数 timeIndex: 时间戳索引
+ * 参数 txnIndex: 事务索引
+ * 参数 baseOffset: 此日志段的基准位移
+ * 参数 indexIntervalBytes: 索引中条目的字节数
+ * 参数 rollJitterMs:
+ * 参数 maxSegmentMs: 日志段中消息的最大时间戳
+ * 参数 maxSegmentBytes: 日志段的最大字节数
+ * 参数 time: 用来获取时间的类
  */
 @nonthreadsafe
 class LogSegment private[log] (val log: FileRecords,
@@ -61,8 +76,18 @@ class LogSegment private[log] (val log: FileRecords,
                                val maxSegmentBytes: Int,
                                val time: Time) extends Logging {
 
+  /**
+   * 判断是否需要滚动日志段
+   * @param messagesSize
+   * @param maxTimestampInMessages
+   * @param maxOffsetInMessages
+   * @param now
+   * @return
+   */
   def shouldRoll(messagesSize: Int, maxTimestampInMessages: Long, maxOffsetInMessages: Long, now: Long): Boolean = {
+    //根据时间跨度判断是否需要滚动日志
     val reachedRollMs = timeWaitedForRoll(now, maxTimestampInMessages) > maxSegmentMs - rollJitterMs
+    //根据日志段大小, 日志段时间跨度, 索引大小以及位移是否溢出等情况判断是否需要滚动日志
     size > maxSegmentBytes - messagesSize ||
       (size > 0 && reachedRollMs) ||
       offsetIndex.isFull || timeIndex.isFull || !canConvertToRelativeOffset(maxOffsetInMessages)
@@ -511,6 +536,10 @@ class LogSegment private[log] (val log: FileRecords,
    * If the first batch does not have a timestamp, we use the wall clock time to determine when to roll a segment. A
    * segment is rolled if the difference between the current wall clock time and the segment create time exceeds the
    * segment rolling time.
+   *
+   * 日志段等待被滚动的时间.
+   * 如果第一个消息batch有时间戳, 那么使用该时间戳来判断是否需要滚动. 如果新的batch时间戳与第一个batch的时间戳的差值超过阈值, 则需要滚动.
+   * 如果第一个batch没有时间戳, 那么使用自然时间来判断是否需要滚动. 如果当前时间与日志段创建的时间差值超过阈值, 则需要滚动.
    */
   def timeWaitedForRoll(now: Long, messageTimestamp: Long) : Long = {
     // Load the timestamp of the first message into memory
