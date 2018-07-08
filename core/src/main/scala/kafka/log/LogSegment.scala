@@ -58,7 +58,7 @@ import scala.math._
  * 参数 timeIndex: 时间戳索引
  * 参数 txnIndex: 事务索引
  * 参数 baseOffset: 此日志段的基准位移
- * 参数 indexIntervalBytes: 索引中条目的字节数
+ * 参数 indexIntervalBytes: 位移索引两个条目映射到日志段中相距的字节数
  * 参数 rollJitterMs:
  * 参数 maxSegmentMs: 日志段中消息的最大时间戳
  * 参数 maxSegmentBytes: 日志段的最大字节数
@@ -113,9 +113,11 @@ class LogSegment private[log] (val log: FileRecords,
   private var created = time.milliseconds
 
   /* the number of bytes since we last added an entry in the offset index */
+  /* 自从上一次增加位移索引后, 日志段增加的消息字节数 */
   private var bytesSinceLastIndexEntry = 0
 
   /* The timestamp we used for time based log rolling */
+  /* 日志段的起始时间戳 */
   private var rollingBasedTimestamp: Option[Long] = None
 
   /* The maximum timestamp we see so far */
@@ -123,6 +125,7 @@ class LogSegment private[log] (val log: FileRecords,
   @volatile private var offsetOfMaxTimestamp: Long = timeIndex.lastEntry.offset
 
   /* Return the size in bytes of this log segment */
+  /* 发怒会此日志段的字节数 */
   def size: Int = log.sizeInBytes()
 
   /**
@@ -144,6 +147,17 @@ class LogSegment private[log] (val log: FileRecords,
    * @param records The log entries to append.
    * @return the physical position in the file of the appended records
    * @throws LogSegmentOffsetOverflowException if the largest offset causes index offset overflow
+   *
+   * 追加消息集, 消息集以参数中指定的位移开始. 索引(可能)增加条目.
+   *
+   * 在调用此方法前需要加锁
+   *
+   * 参数 largestOffset: 消息集的最大位移
+   * 参数 largestTimestamp: 消息集的最大时间戳
+   * 参数 shallowOffsetOfMaxTimestamp: 消息中最大时间戳的位移
+   * 参数 records: 需要增加的日志条目
+   * 返回 追加的记录在文件内的物理偏移
+   * 抛出LogSegmentOffsetOverflowException异常: 如果消息集中最大的位移导致日志段位移溢出
    */
   @nonthreadsafe
   def append(largestOffset: Long,
@@ -154,23 +168,31 @@ class LogSegment private[log] (val log: FileRecords,
       trace(s"Inserting ${records.sizeInBytes} bytes at end offset $largestOffset at position ${log.sizeInBytes} " +
             s"with largest timestamp $largestTimestamp at shallow offset $shallowOffsetOfMaxTimestamp")
       val physicalPosition = log.sizeInBytes()
+
+      //记录日志段的起始时间戳
       if (physicalPosition == 0)
         rollingBasedTimestamp = Some(largestTimestamp)
 
+      //检查位移是否溢出
       ensureOffsetInRange(largestOffset)
 
       // append the messages
       val appendedBytes = log.append(records)
       trace(s"Appended $appendedBytes to ${log.file} at end offset $largestOffset")
       // Update the in memory max timestamp and corresponding offset.
+      // 更新最大的时间戳及其位移
       if (largestTimestamp > maxTimestampSoFar) {
         maxTimestampSoFar = largestTimestamp
         offsetOfMaxTimestamp = shallowOffsetOfMaxTimestamp
       }
       // append an entry to the index (if needed)
+      // 如果日志段新增了一定数量的消息, 那么增加一个位移索引, 同时(可能)增加时间戳索引
       if (bytesSinceLastIndexEntry > indexIntervalBytes) {
+        //增加位移索引
         offsetIndex.append(largestOffset, physicalPosition)
+        //(可能)增加时间戳索引
         timeIndex.maybeAppend(maxTimestampSoFar, offsetOfMaxTimestamp)
+
         bytesSinceLastIndexEntry = 0
       }
       bytesSinceLastIndexEntry += records.sizeInBytes
@@ -271,11 +293,21 @@ class LogSegment private[log] (val log: FileRecords,
    * @param startingFilePosition A lower bound on the file position from which to begin the search. This is purely an optimization and
    * when omitted, the search will begin at the position in the offset index.
    * @return The position in the log storing the message with the least offset >= the requested offset and the size of the
-    *        message or null if no message meets this criteria.
+   *         message or null if no message meets this criteria.
+   *
+   * 查找第一条位移大于等于参数offset的消息, 返回它在日志文件中的物理偏移.
+   * startingFilePosition是一个优化参数, 如果我们已经知道查找的物理起始位移时可以传入
+   *
+   * 参数 offset: 想要转换的消息位移
+   * 参数 startingFilePosition: 查找文件时可以指定的开始位置. 这是一个加速查找的优化参数.
+   * 返回 第一条位移大于等于参数offset的消息的物理偏移, 以及其消息大小
    */
   @threadsafe
   private[log] def translateOffset(offset: Long, startingFilePosition: Int = 0): LogOffsetPosition = {
+    //查找不大于参数offset的最大位移数据
     val mapping = offsetIndex.lookup(offset)
+
+
     log.searchForOffsetWithSize(offset, max(mapping.position, startingFilePosition))
   }
 
@@ -291,14 +323,25 @@ class LogSegment private[log] (val log: FileRecords,
    *
    * @return The fetched data and the offset metadata of the first message whose offset is >= startOffset,
    *         or null if the startOffset is larger than the largest offset in this log
+   *
+   * 从参数startOffset开始读取消息, 读取的消息大小不超过参数maxSize, 而且位移不大于maxOffset
+   * 参数 startOffset: 读取的起始消息位移
+   * 参数 maxOffset: 可选参数, 读取的最大位移
+   * 参数 maxSize: 可选参数, 读取的最大字节数
+   * 参数 maxPosition: 日志段中能读取的最大物理偏移
+   * 参数 minOneMessage: 如果为true, 那么至少返回一条消息(即使返回的消息超出`maxSize`)
+   * 返回 拉取的数据, 以及第一条消息的位移元数据(如果起始位移大于此日志段最大位移则为null)
    */
   @threadsafe
   def read(startOffset: Long, maxOffset: Option[Long], maxSize: Int, maxPosition: Long = size,
            minOneMessage: Boolean = false): FetchDataInfo = {
+    //校验maxSize
     if (maxSize < 0)
       throw new IllegalArgumentException(s"Invalid max size $maxSize for log read from segment $log")
 
+    //日志大小可能由于写入而改变, 这里保存一个快照以保证一致性
     val logSize = log.sizeInBytes // this may change, need to save a consistent copy
+
     val startOffsetAndSize = translateOffset(startOffset)
 
     // if the start position is already off the end of the log, return null
@@ -520,11 +563,16 @@ class LogSegment private[log] (val log: FileRecords,
    * Append the largest time index entry to the time index and trim the log and indexes.
    *
    * The time index entry appended will be used to decide when to delete the segment.
+   * 在关闭日志段前调用此方法, 此方法会在时间索引中增加一个最大的时间戳索引, 并trim日志文件, 位移索引文件和时间索引文件
    */
   def onBecomeInactiveSegment() {
+    //在时间戳文件中新增最大时间戳的索引条目
     timeIndex.maybeAppend(maxTimestampSoFar, offsetOfMaxTimestamp, skipFullCheck = true)
+    //trim索引文件
     offsetIndex.trimToValidSize()
+    //trim时间索引文件
     timeIndex.trimToValidSize()
+    //trim日志文件
     log.trim()
   }
 
@@ -655,6 +703,18 @@ class LogSegment private[log] (val log: FileRecords,
 
 object LogSegment {
 
+  /**
+   * 打开日志段
+   * @param dir 日志段目录
+   * @param baseOffset 日志段基准位移
+   * @param config 日志段配置
+   * @param time 用于获取时间的实例
+   * @param fileAlreadyExists 文件是否存在
+   * @param initFileSize 初始的文件大小
+   * @param preallocate 是否预分配空间
+   * @param fileSuffix 文件名后缀
+   * @return 日志段实例
+   */
   def open(dir: File, baseOffset: Long, config: LogConfig, time: Time, fileAlreadyExists: Boolean = false,
            initFileSize: Int = 0, preallocate: Boolean = false, fileSuffix: String = ""): LogSegment = {
     val maxIndexSize = config.maxIndexSize

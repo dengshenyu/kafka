@@ -143,17 +143,27 @@ class LeaderEpochFileCache(topicPartition: TopicPartition, leo: () => LogOffsetM
     * This method is exclusive: so clearEarliest(6) will retain an entry at offset 6.
     *
     * @param offset the offset to clear up to
+   *
+   *  清除老的epoch条目. 此方法会查询小于参数offset的老epoch,
     */
   override def clearAndFlushEarliest(offset: Long): Unit = {
     inWriteLock(lock) {
       val before = epochs
+      //如果发现存在比参数offset更老的epoch则执行更新操作
       if (offset >= 0 && earliestOffset() < offset) {
+        //获取比参数offset更老的epoch
         val earliest = epochs.filter(entry => entry.startOffset < offset)
+
         if (earliest.nonEmpty) {
+          //清除这些老epoch的信息
           epochs = epochs --= earliest
+
           //If the offset is less than the earliest offset remaining, add previous epoch back, but with an updated offset
+          //如果参数offset比现在最老的位移更小, 那么保留移除的前一个epoch数据(但是更新其基准位移)
           if (offset < earliestOffset() || epochs.isEmpty)
             new EpochEntry(earliest.last.epoch, offset) +=: epochs
+
+          //刷盘
           flush()
           info(s"Cleared earliest ${before.toSet.filterNot(epochs.toSet).size} entries from epoch cache based on passed offset $offset leaving ${epochs.size} in EpochFile for partition $topicPartition")
         }
@@ -181,6 +191,7 @@ class LeaderEpochFileCache(topicPartition: TopicPartition, leo: () => LogOffsetM
     epochs
   }
 
+  //获取最老的epoch基准位移
   private def earliestOffset(): Long = {
     if (epochs.isEmpty) -1 else epochs.head.startOffset
   }
@@ -189,6 +200,7 @@ class LeaderEpochFileCache(topicPartition: TopicPartition, leo: () => LogOffsetM
     if (epochs.isEmpty) -1 else epochs.last.startOffset
   }
 
+  //将当前的epoch信息刷盘
   private def flush(): Unit = {
     checkpoint.write(epochs)
   }

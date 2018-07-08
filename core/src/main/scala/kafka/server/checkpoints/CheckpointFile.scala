@@ -49,6 +49,7 @@ class CheckpointFile[T](val file: File,
     lock synchronized {
       try {
         // write to temp file and then swap with the existing file
+        // 先写到一个临时文件, 然后再用它替代当前的文件
         val fileOutputStream = new FileOutputStream(tempPath.toFile)
         val writer = new BufferedWriter(new OutputStreamWriter(fileOutputStream, StandardCharsets.UTF_8))
         try {

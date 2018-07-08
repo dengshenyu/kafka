@@ -87,8 +87,14 @@ public class MemoryRecords extends AbstractRecords {
      * @param channel The channel to write to
      * @return The number of bytes written
      * @throws IOException For any IO errors writing to the channel
+     *
+     * 将所有记录写入的指定的channel
+     * 参数 chnanel: 写入记录的channel
+     * 返回 写入的字节数
+     * 抛出 IOException: 如果写入发生IO异常
      */
     public int writeFullyTo(GatheringByteChannel channel) throws IOException {
+        //写入记录到指定channel, 这里先mark再reset, 是为了使得在写入之后缓冲区状态仍然和写入前一样
         buffer.mark();
         int written = 0;
         while (written < sizeInBytes())

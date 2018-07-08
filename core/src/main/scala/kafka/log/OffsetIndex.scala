@@ -82,11 +82,21 @@ class OffsetIndex(_file: File, baseOffset: Long, maxIndexSize: Int = -1, writabl
    * @return The offset found and the corresponding file position for this offset
    *         If the target offset is smaller than the least entry in the index (or the index is empty),
    *         the pair (baseOffset, 0) is returned.
+   * 查找不大于targetOffset的最大位移, 并返回此位移及其映射的日志文件物理偏移
+   *
+   * 参数 targetOffset: 查找的目标位移
+   * 返回 小于等于参数targetOffset的最大位移及其映射的日志文件物理偏移. 如果目标位移小于索引的最小位移(或者索引为空),
+   *      那么消息位移返回baseOffset, 文件物理偏移返回0
    */
   def lookup(targetOffset: Long): OffsetPosition = {
     maybeLock(lock) {
+      //复制位移buffer(数据共享无拷贝, 但position, limit, and mark是独立的)
       val idx = mmap.duplicate
+
+      //查找不大于targetOffset的最大位移条目
       val slot = largestLowerBoundSlotFor(idx, targetOffset, IndexSearchType.KEY)
+
+      //返回结果
       if(slot == -1)
         OffsetPosition(baseOffset, 0)
       else
@@ -110,11 +120,18 @@ class OffsetIndex(_file: File, baseOffset: Long, maxIndexSize: Int = -1, writabl
     }
   }
 
+  /**
+   * 获取buffer中第n个条目的消息相对位移
+   * @param buffer
+   * @param n
+   * @return
+   */
   private def relativeOffset(buffer: ByteBuffer, n: Int): Int = buffer.getInt(n * entrySize)
 
   private def physical(buffer: ByteBuffer, n: Int): Int = buffer.getInt(n * entrySize + 4)
 
   override def parseEntry(buffer: ByteBuffer, n: Int): IndexEntry = {
+      //返回消息位移及其在文件内的物理偏移
       OffsetPosition(baseOffset + relativeOffset(buffer, n), physical(buffer, n))
   }
 
@@ -135,18 +152,25 @@ class OffsetIndex(_file: File, baseOffset: Long, maxIndexSize: Int = -1, writabl
   /**
    * Append an entry for the given offset/location pair to the index. This entry must have a larger offset than all subsequent entries.
    * @throws IndexOffsetOverflowException if the offset causes index offset to overflow
+   *
+   * 在索引中增加条目, 此条目必须拥有比之前条目更大的位移
+   * 抛出 IndexOffsetOverflowException异常: 如果该位移导致索引位移溢出
+   * 抛出 InvalidOffsetException异常: 如果该位移比原有的位移更小
    */
   def append(offset: Long, position: Int) {
     inLock(lock) {
       require(!isFull, "Attempt to append to a full index (size = " + _entries + ").")
       if (_entries == 0 || offset > _lastOffset) {
         debug("Adding index entry %d => %d to %s.".format(offset, position, file.getName))
+        //记录相对位移
         mmap.putInt(relativeOffset(offset))
+        //记录日志段内的物理偏移
         mmap.putInt(position)
         _entries += 1
         _lastOffset = offset
         require(_entries * entrySize == mmap.position(), entries + " entries but file position in index is " + mmap.position() + ".")
       } else {
+        //如果新增的位移比原有的位移更小则抛出InvalidOffsetException异常
         throw new InvalidOffsetException("Attempt to append an offset (%d) to position %d no larger than the last offset appended (%d) to %s."
           .format(offset, entries, _lastOffset, file.getAbsolutePath))
       }

@@ -55,6 +55,7 @@ object LeaderEpochCheckpointFile {
 
 /**
   * This class persists a map of (LeaderEpoch => Offsets) to a file (for a certain replica)
+  * 此类持久化(LeaderEpoch => offset)的映射关系到一个文件
   */
 class LeaderEpochCheckpointFile(val file: File, logDirFailureChannel: LogDirFailureChannel = null) extends LeaderEpochCheckpoint {
   import LeaderEpochCheckpointFile._

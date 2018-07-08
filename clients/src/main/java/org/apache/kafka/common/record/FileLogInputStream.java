@@ -60,33 +60,42 @@ public class FileLogInputStream implements LogInputStream<FileLogInputStream.Fil
     @Override
     public FileChannelRecordBatch nextBatch() throws IOException {
         FileChannel channel = fileRecords.channel();
+        //如果已经读到尾了, 那么返回null
         if (position >= end - HEADER_SIZE_UP_TO_MAGIC)
             return null;
 
+        //从文件中读入日志header
         logHeaderBuffer.rewind();
         Utils.readFullyOrFail(channel, logHeaderBuffer, position, "log header");
 
+        //获取位移和大小
         logHeaderBuffer.rewind();
         long offset = logHeaderBuffer.getLong(OFFSET_OFFSET);
         int size = logHeaderBuffer.getInt(SIZE_OFFSET);
 
         // V0 has the smallest overhead, stricter checking is done later
+        // 校验大小, V0版本消息的额外消耗最小, 使用这个值做校验(严格的校验正在开发中)
         if (size < LegacyRecord.RECORD_OVERHEAD_V0)
             throw new CorruptRecordException(String.format("Found record size %d smaller than minimum record " +
                             "overhead (%d) in file %s.", size, LegacyRecord.RECORD_OVERHEAD_V0, fileRecords.file()));
 
+        //进一步校验, 如果已经读到尾了, 那么返回null
         if (position > end - LOG_OVERHEAD - size)
             return null;
 
+        //获取消息版本
         byte magic = logHeaderBuffer.get(MAGIC_OFFSET);
         final FileChannelRecordBatch batch;
 
+        //创建记录batch
         if (magic < RecordBatch.MAGIC_VALUE_V2)
             batch = new LegacyFileChannelRecordBatch(offset, magic, channel, position, size);
         else
             batch = new DefaultFileChannelRecordBatch(offset, magic, channel, position, size);
 
+        //前进位置
         position += batch.sizeInBytes();
+
         return batch;
     }
 

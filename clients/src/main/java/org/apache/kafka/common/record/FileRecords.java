@@ -146,6 +146,10 @@ public class FileRecords extends AbstractRecords implements Closeable {
      * Append log batches to the buffer
      * @param records The records to append
      * @return the number of bytes written to the underlying file
+     *
+     * 在缓冲区中新增日志记录
+     * 参数 records: 追加的记录
+     * 返回写入的字节数
      */
     public int append(MemoryRecords records) throws IOException {
         int written = records.writeFullyTo(channel);
@@ -281,6 +285,8 @@ public class FileRecords extends AbstractRecords implements Closeable {
      *
      * @param targetOffset The offset to search for.
      * @param startingPosition The starting position in the file to begin searching from.
+     *
+     * 
      */
     public LogOffsetPosition searchForOffsetWithSize(long targetOffset, int startingPosition) {
         for (FileChannelRecordBatch batch : batchesFrom(startingPosition)) {
@@ -360,6 +366,10 @@ public class FileRecords extends AbstractRecords implements Closeable {
      * method must be used with caution: the start position passed in must be a known start of a batch.
      * @param start The position to start record iteration from; must be a known position for start of a batch
      * @return An iterator over batches starting from {@code start}
+     *
+     * 创建一个从指定位置开始的记录迭代器, 这个和{@link #batches()}方法相同, 除了此方法可以指定一个起始位置. 在使用时, 需要
+     * 保证传入的位置为一个batch开始的位置.
+     * 参数 start: 迭代器的起始位移; 必须为一个batch的开始位置
      */
     public Iterable<FileChannelRecordBatch> batchesFrom(final int start) {
         return new Iterable<FileChannelRecordBatch>() {
@@ -377,11 +387,16 @@ public class FileRecords extends AbstractRecords implements Closeable {
 
     private AbstractIterator<FileChannelRecordBatch> batchIterator(int start) {
         final int end;
+        //如果此FileRecords为一个切片视图, 那么使用结束位置; 否则使用整个字节数大小作为结束位置
         if (isSlice)
             end = this.end;
         else
             end = this.sizeInBytes();
+
+        //获取迭代器所对应的消息流
         FileLogInputStream inputStream = new FileLogInputStream(this, start, end);
+
+        //返回迭代器
         return new RecordBatchIterator<>(inputStream);
     }
 

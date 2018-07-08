@@ -105,6 +105,11 @@ class TimeIndex(_file: File, baseOffset: Long, maxIndexSize: Int = -1, writable:
    * @param offset The offset of the new time index entry
    * @param skipFullCheck To skip checking whether the segment is full or not. We only skip the check when the segment
    *                      gets rolled or the segment is closed.
+   *
+   * 舱室在日志索引中增加一个时间索引条目. 当且仅当新的时间戳和索引都比文件中最后的时间戳和索引都大, 才会新增此条目.
+   * 参数 时间戳: 新索引条目的时间戳
+   * 参数 位移: 新索引条目的位移
+   * 参数 skipFullCheck: 是否跳过检查索引文件是否已经填满. 只有在日志段滚动或者关闭的情况下才会跳过此检查.
    */
   def maybeAppend(timestamp: Long, offset: Long, skipFullCheck: Boolean = false) {
     inLock(lock) {
@@ -116,6 +121,11 @@ class TimeIndex(_file: File, baseOffset: Long, maxIndexSize: Int = -1, writable:
       // because that could happen in the following two scenarios:
       // 1. A log segment is closed.
       // 2. LogSegment.onBecomeInactiveSegment() is called when an active log segment is rolled.
+      //
+      // 如果新条目的位移或时间戳比最后的条目小, 那么抛出异常.
+      // 如果新条目和最后的条目完全一样, 那么会忽略插入但不抛出异常, 这种情况会发生在如下场景:
+      // 1. 日志段关闭
+      // 2. 日志段滚动, 调用LogSegment.onBecomeInactiveSegment()
       if (_entries != 0 && offset < lastEntry.offset)
         throw new InvalidOffsetException("Attempt to append an offset (%d) to slot %d no larger than the last offset appended (%d) to %s."
           .format(offset, _entries, lastEntry.offset, file.getAbsolutePath))
@@ -125,10 +135,15 @@ class TimeIndex(_file: File, baseOffset: Long, maxIndexSize: Int = -1, writable:
       // We only append to the time index when the timestamp is greater than the last inserted timestamp.
       // If all the messages are in message format v0, the timestamp will always be NoTimestamp. In that case, the time
       // index will be empty.
+      //
+      // 当新条目的时间戳比最后的时间戳大, 才新增条目.
       if (timestamp > lastEntry.timestamp) {
         debug("Adding index entry %d => %d to %s.".format(timestamp, offset, file.getName))
+        //记录时间戳
         mmap.putLong(timestamp)
+        //记录相对位移
         mmap.putInt(relativeOffset(offset))
+
         _entries += 1
         _lastEntry = TimestampOffset(timestamp, offset)
         require(_entries * entrySize == mmap.position(), _entries + " entries but file position in index is " + mmap.position() + ".")

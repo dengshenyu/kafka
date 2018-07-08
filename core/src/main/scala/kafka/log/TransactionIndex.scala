@@ -50,12 +50,20 @@ class TransactionIndex(val startOffset: Long, @volatile var file: File) extends 
   if (file.exists)
     openChannel()
 
+  /**
+   * 增加终止事务的索引
+   * @param abortedTxn
+   */
   def append(abortedTxn: AbortedTxn): Unit = {
+    // 如果位移小于等于之前的位移, 则抛出IllegalArgumentException位移
     lastOffset.foreach { offset =>
       if (offset >= abortedTxn.lastOffset)
         throw new IllegalArgumentException("The last offset of appended transactions must increase sequentially")
     }
+    //记录最新的位移
     lastOffset = Some(abortedTxn.lastOffset)
+
+    //写入channel
     Utils.writeFully(channel, abortedTxn.buffer.duplicate())
   }
 

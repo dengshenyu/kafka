@@ -524,6 +524,9 @@ public abstract class AbstractLegacyRecordBatch extends AbstractRecordBatch impl
         }
     }
 
+    /**
+     * V2版本以前的记录batch实现
+     */
     static class LegacyFileChannelRecordBatch extends FileLogInputStream.FileChannelRecordBatch {
 
         LegacyFileChannelRecordBatch(long offset,

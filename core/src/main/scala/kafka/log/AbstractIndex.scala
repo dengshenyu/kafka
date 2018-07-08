@@ -110,23 +110,37 @@ abstract class AbstractIndex[K, V](@volatile var file: File, val baseOffset: Lon
    *
    * @param newSize new size of the index file
    * @return a boolean indicating whether the size of the memory map and the underneath file is changed or not.
+   *
+   * 重置内存映射空间和其底下文件的大小, 此方法主要在两种场景下使用:
+   * 1) 在关闭日志段或者滚动日志时, 在trimToValidSize()方法中调用;
+   * 2) 在新的日志段激活时, 加载日志段或者把老日志段截断;
+   * 将索引大小重置成最大可以避免滚动日志
+   *
+   * 参数 newSize 新索引文件的大小
+   * 返回 内存映射空间或底下文件是否被更改
    */
   def resize(newSize: Int): Boolean = {
     inLock(lock) {
+      //每个条目大小为entrySize, 返回小于或等于newSize且最接近它的entrySize倍数
       val roundedNewSize = roundDownToExactMultiple(newSize, entrySize)
 
       if (_length == roundedNewSize) {
+        //如果索引长度刚好等于新的长度, 那么不用更改
         false
       } else {
+
         val raf = new RandomAccessFile(file, "rw")
         try {
           val position = mmap.position()
 
           /* Windows won't let us modify the file length while the file is mmapped :-( */
+          // Windows系统不能更改mmaped文件的大小, 这里先做unmap
           if (OperatingSystem.IS_WINDOWS)
             safeForceUnmap()
+          //设置索引文件为新的大小
           raf.setLength(roundedNewSize)
           _length = roundedNewSize
+          //重新mmap
           mmap = raf.getChannel().map(FileChannel.MapMode.READ_WRITE, 0, roundedNewSize)
           _maxEntries = mmap.limit() / entrySize
           mmap.position(position)
@@ -230,6 +244,8 @@ abstract class AbstractIndex[K, V](@volatile var file: File, val baseOffset: Lon
   /**
    * Get offset relative to base offset of this index
    * @throws IndexOffsetOverflowException
+   *
+   * 计算相对位移
    */
   def relativeOffset(offset: Long): Int = {
     val relativeOffset = toRelative(offset)
@@ -283,6 +299,11 @@ abstract class AbstractIndex[K, V](@volatile var file: File, val baseOffset: Lon
    * @param buffer the buffer of this memory mapped index.
    * @param n the slot
    * @return the index entry stored in the given slot.
+   *
+   * 返回索引中的相应条目
+   * 参数 buffer: 索引文件mmap的buffer
+   * 参数 n: 条目的下标
+   * 返回 对应的日志条目
    */
   protected def parseEntry(buffer: ByteBuffer, n: Int): IndexEntry
 
@@ -293,6 +314,11 @@ abstract class AbstractIndex[K, V](@volatile var file: File, val baseOffset: Lon
    * @param idx The index buffer
    * @param target The index key to look for
    * @return The slot found or -1 if the least entry in the index is larger than the target key or the index is empty
+   *
+   * 查找不大于目标key(或value)的最大条目, 比较时使用IndexEntry.compareTo()方法
+   * 参数 idx: 索引buffer
+   * 参数 target: 查找的目标
+   * 返回 相应的条目, 或者-1(如果索引中最小的条目都比目标大, 或索引为空)
    */
   protected def largestLowerBoundSlotFor(idx: ByteBuffer, target: Long, searchEntity: IndexSearchEntity): Int =
     indexSlotRangeFor(idx, target, searchEntity)._1
@@ -305,23 +331,30 @@ abstract class AbstractIndex[K, V](@volatile var file: File, val baseOffset: Lon
 
   /**
    * Lookup lower and upper bounds for the given target.
+   * 查找指定目标对应的索引区间(因为每个索引条目只对应一个点, 如果匹配则区间就为这个点, 否则为一个索引区间)
    */
   private def indexSlotRangeFor(idx: ByteBuffer, target: Long, searchEntity: IndexSearchEntity): (Int, Int) = {
     // check if the index is empty
+    // 检查索引是否为空
     if(_entries == 0)
       return (-1, -1)
 
     // check if the target offset is smaller than the least offset
+    // 检查范围
     if(compareIndexEntry(parseEntry(idx, 0), target, searchEntity) > 0)
       return (-1, 0)
 
     // binary search for the entry
+    // 二分查找
     var lo = 0
     var hi = _entries - 1
     while(lo < hi) {
       val mid = ceil(hi/2.0 + lo/2.0).toInt
+      //获取索引中对应的条目
       val found = parseEntry(idx, mid)
+      //比较大小
       val compareResult = compareIndexEntry(found, target, searchEntity)
+      //比较切分区间
       if(compareResult > 0)
         hi = mid - 1
       else if(compareResult < 0)
@@ -333,6 +366,13 @@ abstract class AbstractIndex[K, V](@volatile var file: File, val baseOffset: Lon
     (lo, if (lo == _entries - 1) -1 else lo + 1)
   }
 
+  /**
+   * 比较索引条目与指定的key(或value)
+   * @param indexEntry
+   * @param target
+   * @param searchEntity
+   * @return
+   */
   private def compareIndexEntry(indexEntry: IndexEntry, target: Long, searchEntity: IndexSearchEntity): Int = {
     searchEntity match {
       case IndexSearchType.KEY => indexEntry.indexKey.compareTo(target)

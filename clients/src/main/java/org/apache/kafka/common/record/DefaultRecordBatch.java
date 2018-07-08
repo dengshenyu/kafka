@@ -644,6 +644,9 @@ public class DefaultRecordBatch extends AbstractRecordBatch implements MutableRe
 
     }
 
+    /**
+     * V2(及更高)版本的记录batch实现
+     */
     static class DefaultFileChannelRecordBatch extends FileLogInputStream.FileChannelRecordBatch {
 
         DefaultFileChannelRecordBatch(long offset,

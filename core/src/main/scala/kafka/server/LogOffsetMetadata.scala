@@ -37,6 +37,11 @@ object LogOffsetMetadata {
  *  1. the message offset
  *  2. the base message offset of the located segment
  *  3. the physical position on the located segment
+ *
+ * 日志位移结构, 包含:
+ *  1. 消息位移
+ *  2. 日志段的基准位移
+ *  3. 日志段的相对位移
  */
 case class LogOffsetMetadata(messageOffset: Long,
                              segmentBaseOffset: Long = LogOffsetMetadata.UnknownSegBaseOffset,
@@ -75,6 +80,7 @@ case class LogOffsetMetadata(messageOffset: Long,
   }
 
   // decide if the offset metadata only contains message offset info
+  // 是否只包含消息位移信息
   def messageOffsetOnly: Boolean = {
     segmentBaseOffset == LogOffsetMetadata.UnknownSegBaseOffset && relativePositionInSegment == LogOffsetMetadata.UnknownFilePosition
   }

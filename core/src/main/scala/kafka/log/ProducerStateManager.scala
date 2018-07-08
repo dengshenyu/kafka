@@ -377,6 +377,9 @@ private[log] class ProducerAppendInfo(val producerId: Long,
     // is only possible to have one transaction started for each log append, and the log
     // offset metadata will always match in that case since no data from other producers
     // is mixed into the append
+    // 如果日志位移与最后一个事务的起始位移相同, 那么缓存此日志位移元数据. 这是leader追加的一个优化,
+    // 因为只允许在每次追加时开始一个事务, 而且日志位移元数据总是匹配上的因为没有来源于其他生产者的数
+    // 据混合在其中
     transactions.headOption.foreach { txn =>
       if (txn.firstOffset.messageOffset == logOffsetMetadata.messageOffset)
         txn.firstOffset = logOffsetMetadata
@@ -558,10 +561,16 @@ class ProducerStateManager(val topicPartition: TopicPartition,
    * An unstable offset is one which is either undecided (i.e. its ultimate outcome is not yet known),
    * or one that is decided, but may not have been replicated (i.e. any transaction which has a COMMIT/ABORT
    * marker written at a higher offset than the current high watermark).
+   *
+   * 获取第一条unstable的位移, 取"未复制事务消息"和"未完成事务消息"中的位移最小者
    */
   def firstUnstableOffset: Option[LogOffsetMetadata] = {
+    //获取第一条未复制的事务消息位移
     val unreplicatedFirstOffset = Option(unreplicatedTxns.firstEntry).map(_.getValue.firstOffset)
+    //获取第一条正在进行中的事务消息位移
     val undecidedFirstOffset = Option(ongoingTxns.firstEntry).map(_.getValue.firstOffset)
+
+    //以下代码获取unreplicatedFirstOffset和undecidedFirstOffset的最小值(需要判空)
     if (unreplicatedFirstOffset.isEmpty)
       undecidedFirstOffset
     else if (undecidedFirstOffset.isEmpty)
@@ -575,6 +584,8 @@ class ProducerStateManager(val topicPartition: TopicPartition,
   /**
    * Acknowledge all transactions which have been completed before a given offset. This allows the LSO
    * to advance to the next unstable offset.
+   *
+   * 根据highWatermark, 确认它之前的事务已经复制. 这样后续的代码可以更新最新的stable位移(Last Stable Offset).
    */
   def onHighWatermarkUpdated(highWatermark: Long): Unit = {
     removeUnreplicatedTransactions(highWatermark)
@@ -761,7 +772,7 @@ class ProducerStateManager(val topicPartition: TopicPartition,
    * the snapshot.
    *
    */
-  //1)删除最后写入消息比logStartOffset还老的生产者(和它的事务)、未完成复制的事务;
+  //1)删除最后写入消息比logStartOffset还老的生产者(及其进行中的事务), 以及比logStartOffset还老且未完成复制的事务;
   //2)删除比logStartOffset还老的生产者快照文件
   def truncateHead(logStartOffset: Long) {
     //找出最后写入消息比logStartOffset还老的生产者列表
@@ -799,6 +810,10 @@ class ProducerStateManager(val topicPartition: TopicPartition,
     }
   }
 
+  /**
+   * 确认offset之前的事务已经复制
+   * @param offset
+   */
   private def removeUnreplicatedTransactions(offset: Long): Unit = {
     val iterator = unreplicatedTxns.entrySet.iterator
     while (iterator.hasNext) {
@@ -823,16 +838,21 @@ class ProducerStateManager(val topicPartition: TopicPartition,
 
   /**
    * Complete the transaction and return the last stable offset.
+   * 完成事务并返回最新的stable位移
    */
   def completeTxn(completedTxn: CompletedTxn): Long = {
+    //获取并删除onGoingTxns(正在进行中的事务)的该事务数据
     val txnMetadata = ongoingTxns.remove(completedTxn.firstOffset)
     if (txnMetadata == null)
       throw new IllegalArgumentException(s"Attempted to complete transaction $completedTxn on partition $topicPartition " +
         s"which was not started")
 
+    //更新事务的结束位移
     txnMetadata.lastOffset = Some(completedTxn.lastOffset)
+    //在已完成但未复制的事务中记录此事务
     unreplicatedTxns.put(completedTxn.firstOffset, txnMetadata)
 
+    //获取并返回最新的stable位移
     val lastStableOffset = firstUndecidedOffset.getOrElse(completedTxn.lastOffset + 1)
     lastStableOffset
   }
