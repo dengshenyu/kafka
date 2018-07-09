@@ -173,6 +173,12 @@ class TransactionIndex(val startOffset: Long, @volatile var file: File) extends 
    * @param upperBoundOffset Exclusive last offset in the fetch range
    * @return An object containing the aborted transactions and whether the search needs to continue
    *         into the next log segment.
+   *
+   * 收集所有与指定拉取范围重叠的已终止事务
+   *
+   * 参数 fetchOffset: 拉取范围的起始位移(包含)
+   * 参数 upperBoundOffset: 拉取范围的最后位移(不包含)
+   * 返回 一个实例, 该实例包含终止事务和指示是否需要在下一个日志段继续搜索的指示器
    */
   def collectAbortedTxns(fetchOffset: Long, upperBoundOffset: Long): TxnIndexSearchResult = {
     val abortedTransactions = ListBuffer.empty[AbortedTxn]

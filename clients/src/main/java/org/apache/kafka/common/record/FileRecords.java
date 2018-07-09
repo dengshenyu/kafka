@@ -69,6 +69,7 @@ public class FileRecords extends AbstractRecords implements Closeable {
 
         if (isSlice) {
             // don't check the file size if this is just a slice view
+            // 如果为切片视图, 那么不检查文件大小
             size.set(end - start);
         } else {
             int limit = Math.min((int) channel.size(), end);
@@ -76,6 +77,7 @@ public class FileRecords extends AbstractRecords implements Closeable {
 
             // if this is not a slice, update the file pointer to the end of the file
             // set the file position to the last byte in the file
+            // 如果非切片视图, 那么更新文件的结束指针, 设置文件位移指向当前的文件结尾
             channel.position(limit);
         }
 
@@ -128,6 +130,10 @@ public class FileRecords extends AbstractRecords implements Closeable {
      * @param position The start position to begin the read from
      * @param size The number of bytes after the start position to include
      * @return A sliced wrapper on this message set limited based on the given position and size
+     *
+     * 返回从指定位置开始且为指定大小的记录视图.
+     * 如果指定的大小超出文件范围, 那么使用读取时此文件的大小作为结束位置;
+     * 如果当前的消息集已经为一个切片视图, 那么参数position会视为相对于此切片的起始位置
      */
     public FileRecords slice(int position, int size) throws IOException {
         if (position < 0)
@@ -286,7 +292,8 @@ public class FileRecords extends AbstractRecords implements Closeable {
      * @param targetOffset The offset to search for.
      * @param startingPosition The starting position in the file to begin searching from.
      *
-     * 
+     * 查找第一条位移大于等于参数offset的消息, 返回它在日志文件中的物理偏移以及大小(包括日志存储额外开销). 如果不存在这样的位移,
+     * 那么返回null
      */
     public LogOffsetPosition searchForOffsetWithSize(long targetOffset, int startingPosition) {
         for (FileChannelRecordBatch batch : batchesFrom(startingPosition)) {

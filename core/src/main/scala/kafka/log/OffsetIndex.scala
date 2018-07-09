@@ -108,6 +108,7 @@ class OffsetIndex(_file: File, baseOffset: Long, maxIndexSize: Int = -1, writabl
    * Find an upper bound offset for the given fetch starting position and size. This is an offset which
    * is guaranteed to be outside the fetched range, but note that it will not generally be the smallest
    * such offset.
+   * 根据指定的起始偏移和大小获取一个上限位移, 这个位移保证在拉取的范围之外, 但不保证是最小的上限(因为位移索引是稀疏的)
    */
   def fetchUpperBoundOffset(fetchOffset: OffsetPosition, fetchSize: Int): Option[OffsetPosition] = {
     maybeLock(lock) {
@@ -131,7 +132,7 @@ class OffsetIndex(_file: File, baseOffset: Long, maxIndexSize: Int = -1, writabl
   private def physical(buffer: ByteBuffer, n: Int): Int = buffer.getInt(n * entrySize + 4)
 
   override def parseEntry(buffer: ByteBuffer, n: Int): IndexEntry = {
-      //返回消息位移及其在文件内的物理偏移
+      //返回第n个槽的消息位移及其在文件内的物理偏移
       OffsetPosition(baseOffset + relativeOffset(buffer, n), physical(buffer, n))
   }
 

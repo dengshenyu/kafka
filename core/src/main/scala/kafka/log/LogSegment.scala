@@ -304,10 +304,10 @@ class LogSegment private[log] (val log: FileRecords,
    */
   @threadsafe
   private[log] def translateOffset(offset: Long, startingFilePosition: Int = 0): LogOffsetPosition = {
-    //查找不大于参数offset的最大位移数据
+    //查找不大于参数offset的最大位移
     val mapping = offsetIndex.lookup(offset)
 
-
+    //查找第一条位移大于等于参数offset的消息, 返回它在日志文件中的物理偏移以及大小(包括日志存储额外开销)
     log.searchForOffsetWithSize(offset, max(mapping.position, startingFilePosition))
   }
 
@@ -342,33 +342,43 @@ class LogSegment private[log] (val log: FileRecords,
     //日志大小可能由于写入而改变, 这里保存一个快照以保证一致性
     val logSize = log.sizeInBytes // this may change, need to save a consistent copy
 
+    //查找第一条位移大于等于startOffset的消息, 获取它在日志文件中的物理偏移及大小.
     val startOffsetAndSize = translateOffset(startOffset)
 
     // if the start position is already off the end of the log, return null
+    // 如果没找到这样的消息, 那么返回null
     if (startOffsetAndSize == null)
       return null
 
+    //生成第一个消息的位移元数据, 包括(消息位移, 日志段基准位移, 消息在日志内的物理偏移)
     val startPosition = startOffsetAndSize.position
     val offsetMetadata = new LogOffsetMetadata(startOffset, this.baseOffset, startPosition)
 
+    //如果设置了minOneMessage, 那么保证至少返回一条消息, 因此这里调整maxSize
     val adjustedMaxSize =
       if (minOneMessage) math.max(maxSize, startOffsetAndSize.size)
       else maxSize
 
     // return a log segment but with zero size in the case below
+    // 如果adjustedMaxSize为0, 那么直接返回空数据
     if (adjustedMaxSize == 0)
       return FetchDataInfo(offsetMetadata, MemoryRecords.EMPTY)
 
     // calculate the length of the message set to read based on whether or not they gave us a maxOffset
+    // 根据maxOffset判断要返回的数据大小
     val fetchSize: Int = maxOffset match {
+      //如果没有设置maxOffset, 那么一直读取直到maxPosition或者大小达到adjustedMaxSize
       case None =>
-        // no max offset, just read until the max position
         min((maxPosition - startPosition).toInt, adjustedMaxSize)
+
+      // there is a max offset, translate it to a file position and use that to calculate the max read size;
+      // when the leader of a partition changes, it's possible for the new leader's high watermark to be less than the
+      // true high watermark in the previous leader for a short window. In this window, if a consumer fetches on an
+      // offset between new leader's high watermark and the log end offset, we want to return an empty response.
+      // 如果设置了最大位移(maxOffset), 那么将它转换成文件内的物理偏移, 然后根据该物理偏移计算读取的最大大小;
+      // 当分区的leader改变时, 有可能在一小段时间内新leader的高水位线小于老leader的高水位线, 如果一个消费者在
+      // 这段时间内拉取超出新leader的高水位线的消息时, 这里返回空数据
       case Some(offset) =>
-        // there is a max offset, translate it to a file position and use that to calculate the max read size;
-        // when the leader of a partition changes, it's possible for the new leader's high watermark to be less than the
-        // true high watermark in the previous leader for a short window. In this window, if a consumer fetches on an
-        // offset between new leader's high watermark and the log end offset, we want to return an empty response.
         if (offset < startOffset)
           return FetchDataInfo(offsetMetadata, MemoryRecords.EMPTY, firstEntryIncomplete = false)
         val mapping = translateOffset(offset, startPosition)
@@ -380,10 +390,17 @@ class LogSegment private[log] (val log: FileRecords,
         min(min(maxPosition, endPosition) - startPosition, adjustedMaxSize).toInt
     }
 
+    //返回拉取的数据信息(第一条消息条目的位移元数据, 拉取的消息视图, 指定了maxSize时第一个消息条目是否完整)
     FetchDataInfo(offsetMetadata, log.slice(startPosition, fetchSize),
       firstEntryIncomplete = adjustedMaxSize < startOffsetAndSize.size)
   }
 
+  /**
+   * 获取一个上限的位移
+   * @param startOffsetPosition
+   * @param fetchSize
+   * @return
+   */
    def fetchUpperBoundOffset(startOffsetPosition: OffsetPosition, fetchSize: Int): Option[Long] =
      offsetIndex.fetchUpperBoundOffset(startOffsetPosition, fetchSize).map(_.offset)
 

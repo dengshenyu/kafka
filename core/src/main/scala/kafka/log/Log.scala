@@ -1487,10 +1487,14 @@ class Log(@volatile var dir: File,
             segment.size
           }
         }
+        //读取日志段, 获取希望拉取的消息信息
         val fetchInfo = segment.read(startOffset, maxOffset, maxLength, maxPosition, minOneMessage)
+
         if (fetchInfo == null) {
+          //如果当前日志段查询不到, 那么查询下一个日志段
           segmentEntry = segments.higherEntry(segmentEntry.getKey)
         } else {
+          //如果隔离级别为READ_UNCOMMITTED那么直接返回, 否则
           return isolationLevel match {
             case IsolationLevel.READ_UNCOMMITTED => fetchInfo
             case IsolationLevel.READ_COMMITTED => addAbortedTransactions(startOffset, segmentEntry, fetchInfo)
@@ -1515,6 +1519,7 @@ class Log(@volatile var dir: File,
 
   private def addAbortedTransactions(startOffset: Long, segmentEntry: JEntry[JLong, LogSegment],
                                      fetchInfo: FetchDataInfo): FetchDataInfo = {
+    //获取一个大于拉取范围的位移上限(该上限不一定是最小的位移上限)
     val fetchSize = fetchInfo.records.sizeInBytes
     val startOffsetPosition = OffsetPosition(fetchInfo.fetchOffsetMetadata.messageOffset,
       fetchInfo.fetchOffsetMetadata.relativePositionInSegment)

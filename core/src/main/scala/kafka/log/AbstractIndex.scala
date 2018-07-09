@@ -325,6 +325,7 @@ abstract class AbstractIndex[K, V](@volatile var file: File, val baseOffset: Lon
 
   /**
    * Find the smallest entry greater than or equal the target key or value. If none can be found, -1 is returned.
+   * 查询大于等于目标key(或value)的最小索引槽, 如果没有则返回-1
    */
   protected def smallestUpperBoundSlotFor(idx: ByteBuffer, target: Long, searchEntity: IndexSearchEntity): Int =
     indexSlotRangeFor(idx, target, searchEntity)._2
