@@ -1494,7 +1494,7 @@ class Log(@volatile var dir: File,
           //如果当前日志段查询不到, 那么查询下一个日志段
           segmentEntry = segments.higherEntry(segmentEntry.getKey)
         } else {
-          //如果隔离级别为READ_UNCOMMITTED那么直接返回, 否则
+          //如果隔离级别为READ_UNCOMMITTED那么直接返回, 否则查询事务索引增加与拉取范围有重叠的已终止(aborted)事务信息
           return isolationLevel match {
             case IsolationLevel.READ_UNCOMMITTED => fetchInfo
             case IsolationLevel.READ_COMMITTED => addAbortedTransactions(startOffset, segmentEntry, fetchInfo)
@@ -1505,6 +1505,8 @@ class Log(@volatile var dir: File,
       // okay we are beyond the end of the last segment with no data fetched although the start offset is in range,
       // this can happen when all messages with offset larger than start offsets have been deleted.
       // In this case, we will return the empty set with log end offset metadata
+      // 到达这个分支意味着, 虽然拉取的起始位移是在日志段的位移范围内, 但仍然查找所有的日志段都没有数据可读.
+      // 当所有比起始位移大的消息被删除时, 就会发生这样的情况. 这里直接返回空数据.
       FetchDataInfo(nextOffsetMetadata, MemoryRecords.EMPTY)
     }
   }
@@ -1531,16 +1533,26 @@ class Log(@volatile var dir: File,
         logEndOffset
     }
 
+    //获取与拉取范围[startOffset,upperBoundOffset) 有重叠的已终止事务
     val abortedTransactions = ListBuffer.empty[AbortedTransaction]
     def accumulator(abortedTxns: List[AbortedTxn]): Unit = abortedTransactions ++= abortedTxns.map(_.asAbortedTransaction)
     collectAbortedTransactions(startOffset, upperBoundOffset, segmentEntry, accumulator)
 
+    //返回带有已终止事务的拉取信息
     FetchDataInfo(fetchOffsetMetadata = fetchInfo.fetchOffsetMetadata,
       records = fetchInfo.records,
       firstEntryIncomplete = fetchInfo.firstEntryIncomplete,
       abortedTransactions = Some(abortedTransactions.toList))
   }
 
+  /**
+   * 查询拉取范围内的已终止事务
+   *
+   * @param startOffset: 拉取范围起始端(包含)
+   * @param upperBoundOffset: 拉取范围结束端(不包含)
+   * @param startingSegmentEntry: 开始查询的日志段
+   * @param accumulator: 已终止事务的收集器
+   */
   private def collectAbortedTransactions(startOffset: Long, upperBoundOffset: Long,
                                          startingSegmentEntry: JEntry[JLong, LogSegment],
                                          accumulator: List[AbortedTxn] => Unit): Unit = {

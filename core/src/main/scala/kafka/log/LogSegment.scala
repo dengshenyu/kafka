@@ -489,6 +489,13 @@ class LogSegment private[log] (val log: FileRecords,
     nextOffset > baseOffset && !canConvertToRelativeOffset(nextOffset - 1)
   }
 
+  /**
+   * 获取拉取范围的已终止事务
+   *
+   * @param fetchOffset
+   * @param upperBoundOffset
+   * @return
+   */
   def collectAbortedTxns(fetchOffset: Long, upperBoundOffset: Long): TxnIndexSearchResult =
     txnIndex.collectAbortedTxns(fetchOffset, upperBoundOffset)
 

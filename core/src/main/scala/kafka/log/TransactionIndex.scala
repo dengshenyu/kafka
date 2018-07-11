@@ -40,6 +40,12 @@ private[log] case class TxnIndexSearchResult(abortedTransactions: List[AbortedTx
  * whose commit markers were written in the corresponding log segment. Note, however, that individual transactions
  * may span multiple segments. Recovering the index therefore requires scanning the earlier segments in
  * order to find the start of the transactions.
+ *
+ * 事务索引包含了日志段已终止事务的元数据, 这包括已终止事务的开始和结束位移, 以及终止事务时的最后stable位移(LSO).
+ * 在消费者以READ_COMMITTED级别拉取消息时, 这个索引用来查询拉取范围内的已终止事务.
+ *
+ * 每个日志段最多只有一个事务索引, 索引条目映射日志段中的事务,这些事务的commit标记记录在日志段中. 需要注意的是, 单个事务可能
+ * 横跨若干个日志段, 因此恢复索引时需要扫描更早的日志段来找到事务的开始.
  */
 @nonthreadsafe
 class TransactionIndex(val startOffset: Long, @volatile var file: File) extends Logging {
@@ -129,6 +135,12 @@ class TransactionIndex(val startOffset: Long, @volatile var file: File) extends 
     }
   }
 
+  /**
+   * 获取扫描此事务索引的迭代器
+   *
+   * @param allocate
+   * @return
+   */
   private def iterator(allocate: () => ByteBuffer = () => ByteBuffer.allocate(AbortedTxn.TotalSize)): Iterator[(AbortedTxn, Int)] = {
     maybeChannel match {
       case None => Iterator.empty
@@ -140,7 +152,9 @@ class TransactionIndex(val startOffset: Long, @volatile var file: File) extends 
 
           override def next(): (AbortedTxn, Int) = {
             try {
+              //分配buffer
               val buffer = allocate()
+              //读取事务索引
               Utils.readFully(channel, buffer, position)
               buffer.flip()
 
