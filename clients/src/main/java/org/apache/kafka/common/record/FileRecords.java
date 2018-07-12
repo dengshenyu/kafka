@@ -314,11 +314,22 @@ public class FileRecords extends AbstractRecords implements Closeable {
      * @param startingPosition The starting position to search.
      * @param startingOffset The starting offset to search.
      * @return The timestamp and offset of the message found. Null if no message is found.
+     *
+     * 一直查询直到发现第一条满足如下条件的消息:
+     * - 消息时间戳大于等于目标时间戳;
+     * - 消息的文件内物理偏移大于等于目标偏移;
+     * - 消息的位移大于等于目标位移
+     *
+     * 参数 targetTimestamp: 目标时间戳
+     * 参数 startingPosition: 目标物理偏移
+     * 参数 startingOffset: 目标位移
      */
     public TimestampAndOffset searchForTimestamp(long targetTimestamp, int startingPosition, long startingOffset) {
+        //从指定物理偏移开始查询, 直到RecordBatch的最大时间戳比目标时间戳大
         for (RecordBatch batch : batchesFrom(startingPosition)) {
             if (batch.maxTimestamp() >= targetTimestamp) {
                 // We found a message
+                // 从RecordBatch中查询第一条满足条件的消息, 返回其时间戳和位移
                 for (Record record : batch) {
                     long timestamp = record.timestamp();
                     if (timestamp >= targetTimestamp && record.offset() >= startingOffset)

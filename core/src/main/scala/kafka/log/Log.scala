@@ -1579,11 +1579,18 @@ class Log(@volatile var dir: File,
    * @param targetTimestamp The given timestamp for offset fetching.
    * @return The offset of the first message whose timestamp is greater than or equals to the given timestamp.
    *         None if no such message is found.
+   *
+   * 获取时间戳大于等于指定时间戳的第一条消息位移. 如果没有找到这样的消息, 那么返回logEndOffset.
+   * 注意: V0版本的OffsetRequest不使用此方法, 它的行为和以前保持一致, 那就是基于日志段最后的修改时间返回时间戳.
+   *
+   * 参数 targetTimestamp: 希望拉取的消息时间戳
+   * 返回: 时间戳大于等于指定时间戳的第一条消息位移
    */
   def fetchOffsetsByTimestamp(targetTimestamp: Long): Option[TimestampOffset] = {
     maybeHandleIOException(s"Error while fetching offset by timestamp for $topicPartition in dir ${dir.getParent}") {
       debug(s"Searching offset for timestamp $targetTimestamp")
 
+      //KAFKA_0_10_0_IV0版本小的消息不支持基于时间戳搜索
       if (config.messageFormatVersion < KAFKA_0_10_0_IV0 &&
         targetTimestamp != ListOffsetRequest.EARLIEST_TIMESTAMP &&
         targetTimestamp != ListOffsetRequest.LATEST_TIMESTAMP)
@@ -1593,8 +1600,11 @@ class Log(@volatile var dir: File,
 
       // Cache to avoid race conditions. `toBuffer` is faster than most alternatives and provides
       // constant time access while being safe to use with concurrent collections unlike `toArray`.
+      // 复制避免竞争. `toBuffer`比其它方法都高效, 并且提供常量的访问时间, 同时线程安全(不像`toArray`)
       val segmentsCopy = logSegments.toBuffer
+
       // For the earliest and latest, we do not need to return the timestamp.
+      // 如果为获取最早和最新的位移, 不需要返回时间戳
       if (targetTimestamp == ListOffsetRequest.EARLIEST_TIMESTAMP)
         return Some(TimestampOffset(RecordBatch.NO_TIMESTAMP, logStartOffset))
       else if (targetTimestamp == ListOffsetRequest.LATEST_TIMESTAMP)
@@ -1602,14 +1612,18 @@ class Log(@volatile var dir: File,
 
       val targetSeg = {
         // Get all the segments whose largest timestamp is smaller than target timestamp
+        // 找到所有最大时间戳比目标时间戳小的日志段
         val earlierSegs = segmentsCopy.takeWhile(_.largestTimestamp < targetTimestamp)
+
         // We need to search the first segment whose largest timestamp is greater than the target timestamp if there is one.
+        // 获取第一个最大时间戳比目标时间戳大的日志段, 如果不存在则为None
         if (earlierSegs.length < segmentsCopy.length)
           Some(segmentsCopy(earlierSegs.length))
         else
           None
       }
 
+      //如果存在, 调用该日志段的findOffsetByTimestamp方法, 查询时间戳大于等于指定时间戳的第一条消息位移
       targetSeg.flatMap(_.findOffsetByTimestamp(targetTimestamp, logStartOffset))
     }
   }
@@ -2079,6 +2093,7 @@ class Log(@volatile var dir: File,
 
   /**
    * All the log segments in this log ordered from oldest to newest
+   * 此日志的所有日志段, 从最老到最新
    */
   def logSegments: Iterable[LogSegment] = segments.values.asScala
 

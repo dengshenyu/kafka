@@ -315,7 +315,7 @@ abstract class AbstractIndex[K, V](@volatile var file: File, val baseOffset: Lon
    * @param target The index key to look for
    * @return The slot found or -1 if the least entry in the index is larger than the target key or the index is empty
    *
-   * 查找不大于目标key(或value)的最大条目, 比较时使用IndexEntry.compareTo()方法
+   * 查找小于等于目标key(或value)的最大条目, 比较时使用IndexEntry.compareTo()方法
    * 参数 idx: 索引buffer
    * 参数 target: 查找的目标
    * 返回 相应的条目, 或者-1(如果索引中最小的条目都比目标大, 或索引为空)

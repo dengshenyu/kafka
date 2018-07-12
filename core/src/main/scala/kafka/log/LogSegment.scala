@@ -646,13 +646,32 @@ class LogSegment private[log] (val log: FileRecords,
    * @param timestamp The timestamp to search for.
    * @param startingOffset The starting offset to search.
    * @return the timestamp and offset of the first message that meets the requirements. None will be returned if there is no such message.
+   *
+   * 基于时间戳和位移, 查询消息的位移.
+   *
+   * 此方法返回一个Option[TimestampOffset], 返回的值由如下步骤决定:
+   *
+   * 1) 如果此日志段所有消息的位移比参数startingOffset小, 那么返回None;
+   * 2) 如果此日志段所有消息的时间戳比参数startingOffset小, 那么返回None;
+   * 3) 如果此日志段所有消息的时间戳都比参数timestamp大, 或者此日志段的消息没有时间戳, 那么返回的位移为max(日志段基准位移, startingOffset),
+   *    而且时间戳为Message.NoTimestamp.
+   * 4) 否则返回Option[TimestampOffset], 其位移为第一条时间戳大于等于目标时间戳的消息位移, 而且该消息位移大于等于参数startingOffset.
+   *
+   * 另外, 如果日志不为空但从索引位置开始扫描不到任何消息时, 此方法也会返回None. 当我们获取到索引位置后但还没开始扫描时, 日志被截断了,
+   * 就会出现这种情况. 对于这种情况, 我们只需要简单的返回None, 调用者需要检查日志阶段, 并根据情况决定是否重试或查询别的日志段.
    */
   def findOffsetByTimestamp(timestamp: Long, startingOffset: Long = baseOffset): Option[TimestampOffset] = {
     // Get the index entry with a timestamp less than or equal to the target timestamp
+    // 获取时间戳小于等于目标时间戳的索引条目
     val timestampOffset = timeIndex.lookup(timestamp)
+
+    //目标位移为max(参数startingOffset, 上面timestampOffset), 获取位移小于等于目标位移的最大文件内物理偏移
     val position = offsetIndex.lookup(math.max(timestampOffset.offset, startingOffset)).position
 
     // Search the timestamp
+    // 从该物理偏移开始查询第一条满足如下条件的消息:
+    // 1)消息时间戳需要大于等于目标时间戳大;
+    // 2)位移大于等于指定起始位移
     Option(log.searchForTimestamp(timestamp, position, startingOffset)).map { timestampAndOffset =>
       TimestampOffset(timestampAndOffset.timestamp, timestampAndOffset.offset)
     }

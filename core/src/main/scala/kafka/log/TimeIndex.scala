@@ -158,11 +158,19 @@ class TimeIndex(_file: File, baseOffset: Long, maxIndexSize: Int = -1, writable:
    *
    * @param targetTimestamp The timestamp to look up.
    * @return The time index entry found.
+   *
+   * 查询时间戳小于等于指定时间戳的索引条目. 如果目标时间戳比时间索引的最小时间戳小, 那么返回(NoTimestamp, baseOffset)
+   *
+   * 参数 targetTimestamp: 目标时间戳
+   * 返回 找到的时间索引条目
    */
   def lookup(targetTimestamp: Long): TimestampOffset = {
     maybeLock(lock) {
       val idx = mmap.duplicate
+      //查找小于等于目标时间戳的最大条目
       val slot = largestLowerBoundSlotFor(idx, targetTimestamp, IndexSearchType.KEY)
+
+      //返回结果
       if (slot == -1)
         TimestampOffset(RecordBatch.NO_TIMESTAMP, baseOffset)
       else {

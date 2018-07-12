@@ -82,7 +82,7 @@ class OffsetIndex(_file: File, baseOffset: Long, maxIndexSize: Int = -1, writabl
    * @return The offset found and the corresponding file position for this offset
    *         If the target offset is smaller than the least entry in the index (or the index is empty),
    *         the pair (baseOffset, 0) is returned.
-   * 查找不大于targetOffset的最大位移, 并返回此位移及其映射的日志文件物理偏移
+   * 查找小于等于targetOffset的最大位移, 并返回此位移及其映射的日志文件物理偏移
    *
    * 参数 targetOffset: 查找的目标位移
    * 返回 小于等于参数targetOffset的最大位移及其映射的日志文件物理偏移. 如果目标位移小于索引的最小位移(或者索引为空),
