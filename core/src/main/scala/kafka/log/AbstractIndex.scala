@@ -177,6 +177,7 @@ abstract class AbstractIndex[K, V](@volatile var file: File, val baseOffset: Lon
    * @throws IOException if deletion fails due to an I/O error
    * @return `true` if the file was deleted by this method; `false` if the file could not be deleted because it did
    *         not exist
+   * 删除此索引文件
    */
   def deleteIfExists(): Boolean = {
     inLock(lock) {
@@ -184,6 +185,8 @@ abstract class AbstractIndex[K, V](@volatile var file: File, val baseOffset: Lon
       // However, in some cases it can pause application threads(STW) for a long moment reading metadata from a physical disk.
       // To prevent this, we forcefully cleanup memory mapping within proper execution which never affects API responsiveness.
       // See https://issues.apache.org/jira/browse/KAFKA-4614 for the details.
+      // 在JVM中, 一个内存映射区域通常由gc收集器来做unmapped操作, 但在某些场景下可能会导致线程由于需要从磁盘上读取元数据而长时间停顿.
+      // 为了避免这种情况, 这里强制清理内存映射, 内部实现比较严谨, 不会导致API失去响应.
       safeForceUnmap()
     }
     Files.deleteIfExists(file.toPath)

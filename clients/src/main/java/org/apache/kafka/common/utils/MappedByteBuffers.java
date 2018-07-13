@@ -45,6 +45,7 @@ public final class MappedByteBuffers {
     private static final Logger log = LoggerFactory.getLogger(MappedByteBuffers.class);
 
     // null if unmap is not supported
+    // 如果不支持unmap操作则为null
     private static final MethodHandle UNMAP;
 
     // null if unmap is supported
@@ -54,6 +55,7 @@ public final class MappedByteBuffers {
         Object unmap = null;
         RuntimeException exception = null;
         try {
+            //获取unmap方法
             unmap = lookupUnmapMethodHandle();
         } catch (RuntimeException e) {
             exception = e;
@@ -70,8 +72,10 @@ public final class MappedByteBuffers {
     private MappedByteBuffers() {}
 
     public static void unmap(String resourceDescription, MappedByteBuffer buffer) throws IOException {
+        //只处理DirectBuffer
         if (!buffer.isDirect())
             throw new IllegalArgumentException("Unmapping only works with direct buffers");
+
         if (UNMAP == null)
             throw UNMAP_NOT_SUPPORTED_EXCEPTION;
 
@@ -95,9 +99,19 @@ public final class MappedByteBuffers {
         }
     }
 
+    //获取Java7/8的unmap方法
     private static MethodHandle unmapJava7Or8(MethodHandles.Lookup lookup) throws ReflectiveOperationException {
         /* "Compile" a MethodHandle that is roughly equivalent to the following lambda:
          *
+         * (ByteBuffer buffer) -> {
+         *   sun.misc.Cleaner cleaner = ((java.nio.DirectByteBuffer) byteBuffer).cleaner();
+         *   if (nonNull(cleaner))
+         *     cleaner.clean();
+         *   else
+         *     noop(cleaner); // the noop is needed because MethodHandles#guardWithTest always needs both if and else
+         * }
+         *
+         * "编译"一个MethodHandle, 其作用和下面的lambda类似:
          * (ByteBuffer buffer) -> {
          *   sun.misc.Cleaner cleaner = ((java.nio.DirectByteBuffer) byteBuffer).cleaner();
          *   if (nonNull(cleaner))
@@ -120,6 +134,7 @@ public final class MappedByteBuffers {
         return unmapper;
     }
 
+    //获取Java9的unmap方法
     private static MethodHandle unmapJava9(MethodHandles.Lookup lookup) throws ReflectiveOperationException {
         Class<?> unsafeClass = Class.forName("sun.misc.Unsafe");
         MethodHandle unmapper = lookup.findVirtual(unsafeClass, "invokeCleaner",

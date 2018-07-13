@@ -106,12 +106,18 @@ case class LogAppendInfo(var firstOffset: Option[Long],
    * For magic versions 2 and newer, this method will return first offset. For magic versions
    * older than 2, we use the last offset of the first batch as an approximation of the first
    * offset to avoid decompressing the data.
+   *
+   * 获取第一条消息的位移, 如果不存在则获取第一个batch的最后一条位移.
+   * 对于magic版本大于等于2的, 此方法会返回第一条消息位移; 对于老的版本, 会使用第一个batch的最后位移以避免
+   * 数据解压缩.
    */
   def firstOrLastOffsetOfFirstBatch: Long = firstOffset.getOrElse(lastOffsetOfFirstBatch)
 
   /**
    * Get the (maximum) number of messages described by LogAppendInfo
    * @return Maximum possible number of messages described by LogAppendInfo
+   *
+   * 获取LogAppendInfo中的消息最大数目
    */
   def numMessages: Long = {
     firstOffset match {
@@ -292,7 +298,7 @@ class Log(@volatile var dir: File,
   @volatile private var replicaHighWatermark: Option[Long] = None
 
   /* the actual segments of the log */
-  // 日志段基准位移 -> 日志段
+  // 日志段基准位移 -> 日志段(主要用来读取消息)
   private val segments: ConcurrentNavigableMap[java.lang.Long, LogSegment] = new ConcurrentSkipListMap[java.lang.Long, LogSegment]
 
   //leader的epoch -> 该epoch的初始位移
@@ -1955,38 +1961,76 @@ class Log(@volatile var dir: File,
    * have a producer snapshot for all segments being recovered.
    *
    * Return the minimum snapshots offset that was retained.
+   *
+   * 在恢复点前的老的生产者快照. 保留最近日志段的生产者快照是非常有用的, 这样我们在日志截断时可以使用来重建生产者状态, 否则
+   * 需要从最早的日志段开始来重建.
+   *
+   * 准确来说:
+   * 1. 这里保留最近两个日志段的生产者快照. 这样就包括了最常见的当前日志段阶段的场景, 以及非常少见的截断至前一个日志段的场景.
+   * 2. 这里只删除小于恢复点的快照. 恢复点会定期被持久化, 可以用来在意外宕机后做故障恢复. 由于故障恢复时从恢复点开始, 因此
+   *    如果对于所有的恢复日志段来说只保留一个生产者快照, 那么重建生产者状态会更简单, 而且不需要加载老的日志段.
    */
   def deleteSnapshotsAfterRecoveryPointCheckpoint(): Long = {
+    //获取需要保留的最小快照位移
     val minOffsetToRetain = minSnapshotsOffsetToRetain
+
+    //删除此之前的生产者快照
     producerStateManager.deleteSnapshotsBefore(minOffsetToRetain)
+
+    //返回保留的最小位移
     minOffsetToRetain
   }
 
   // Visible for testing, see `deleteSnapshotsAfterRecoveryPointCheckpoint()` for details
+  // 对测试可见, 此方法使用详见deleteSnapshotsAfterRecoveryPointCheckpoint内部实现
+  // 获取需要保留的最小快照位移
   private[log] def minSnapshotsOffsetToRetain: Long = {
     lock synchronized {
+      //获取前一个日志段的基准位移, 如果不存在前一个日志段则使用当前日志段的基准位移
       val twoSegmentsMinOffset = lowerSegment(activeSegment.baseOffset).getOrElse(activeSegment).baseOffset
+
       // Prefer segment base offset
+      // 获取基准位移小于恢复点的最大日志段基准位移, 如果不存在则使用恢复点
       val recoveryPointOffset = lowerSegment(recoveryPoint).map(_.baseOffset).getOrElse(recoveryPoint)
+
+      //返回recoveryPointOffset和twoSegmentsMinOffset的最小值
       math.min(recoveryPointOffset, twoSegmentsMinOffset)
     }
   }
 
+  /**
+   * 获取基准位移比参数offset小的最大日志段
+   * @param offset
+   * @return
+   */
   private def lowerSegment(offset: Long): Option[LogSegment] =
     Option(segments.lowerEntry(offset)).map(_.getValue)
 
   /**
    * Completely delete this log directory and all contents from the file system with no delay
+   * 删除此日志目录和目录中的所有内容
    */
   private[log] def delete() {
     maybeHandleIOException(s"Error while deleting log for $topicPartition in dir ${dir.getParent}") {
       lock synchronized {
+        //检查内存映射缓冲区是否关闭
         checkIfMemoryMappedBufferClosed()
+
+        //删除日志指标
         removeLogMetrics()
+
+        //删除所有日志段数据
         logSegments.foreach(_.deleteIfExists())
+
+        //清除内存中记录的日志段数据
         segments.clear()
+
+        //清除epoch与其初始位移的映射缓存
         _leaderEpochCache.clear()
+
+        //删除目录
         Utils.delete(dir)
+
         // File handlers will be closed if this log is deleted
         isMemoryMappedBufferClosed = true
       }
@@ -1994,22 +2038,26 @@ class Log(@volatile var dir: File,
   }
 
   // visible for testing
+  // 生成生产者快照
   private[log] def takeProducerSnapshot(): Unit = lock synchronized {
     checkIfMemoryMappedBufferClosed()
     producerStateManager.takeSnapshot()
   }
 
   // visible for testing
+  // 获取生产者最新的快照位移
   private[log] def latestProducerSnapshotOffset: Option[Long] = lock synchronized {
     producerStateManager.latestSnapshotOffset
   }
 
   // visible for testing
+  // 获取生产者最老的快照位移
   private[log] def oldestProducerSnapshotOffset: Option[Long] = lock synchronized {
     producerStateManager.oldestSnapshotOffset
   }
 
   // visible for testing
+  // 获取生产者的最新位移
   private[log] def latestProducerStateEndOffset: Long = lock synchronized {
     producerStateManager.mapEndOffset
   }
@@ -2019,6 +2067,11 @@ class Log(@volatile var dir: File,
    *
    * @param targetOffset The offset to truncate to, an upper bound on all offsets in the log after truncation is complete.
    * @return True iff targetOffset < logEndOffset
+   *
+   * 将此日志截断, 使其最大位移小于目标位移
+   *
+   * 参数 targetOffset: 目标位移, 日志截断后的所有位移上限
+   * 返回 true当且仅当目标位移小于logEndOffset(日志的下一条消息位移)
    */
   private[log] def truncateTo(targetOffset: Long): Boolean = {
     maybeHandleIOException(s"Error while truncating log to offset $targetOffset for $topicPartition in dir ${dir.getParent}") {
@@ -2053,6 +2106,9 @@ class Log(@volatile var dir: File,
    *  Delete all data in the log and start at the new offset
    *
    *  @param newOffset The new offset to start the log with
+   *
+   *  删除日志中所有的数据, 并且从新的位移重新开始
+   *  参数 newOffset: 新日志的开始位移
    */
   private[log] def truncateFullyAndStartAt(newOffset: Long) {
     maybeHandleIOException(s"Error while truncating the entire log for $topicPartition in dir ${dir.getParent}") {
@@ -2060,7 +2116,10 @@ class Log(@volatile var dir: File,
       lock synchronized {
         checkIfMemoryMappedBufferClosed()
         val segmentsToDelete = logSegments.toList
+        //异步删除日志段
         segmentsToDelete.foreach(deleteSegment)
+
+        //以新的位移生成新日志段
         addSegment(LogSegment.open(dir,
           baseOffset = newOffset,
           config = config,
@@ -2127,6 +2186,17 @@ class Log(@volatile var dir: File,
    * or the immediate caller will catch and handle IOException
    *
    * @param segment The log segment to schedule for deletion
+   *
+   * 此方法执行异步的日志段删除操作, 如下所示:
+   *
+   * 1) 从日志段map中删除日志段, 这样该日志段将不会用来做读取;
+   * 2) 将索引和日志文件重命名添加.deleted后缀;
+   * 3) 执行一个异步的删除操作
+   *
+   * 此方法允许和读取操作同时操作而不需要做同步, 也不存在物理删除操作与读取操作冲突的可能性.
+   * 此方法不需要将IOException转换成KafkaStorageException, 因为它只会在所有日志加载前调用或者调用者本身会处理IOException
+   *
+   * 参数 segment: 需要删除的日志段
    */
   private def deleteSegment(segment: LogSegment) {
     info(s"Scheduling log segment [baseOffset ${segment.baseOffset}, size ${segment.size}] for deletion.")
@@ -2154,6 +2224,8 @@ class Log(@volatile var dir: File,
         segment.deleteIfExists()
       }
     }
+
+    //执行调度任务, 底下使用java.util.concurrent.ScheduledThreadPoolExecutor实现
     scheduler.schedule("delete-file", deleteSeg _, delay = config.fileDeleteDelayMs)
   }
 
@@ -2238,6 +2310,7 @@ class Log(@volatile var dir: File,
 
   /**
    * remove deleted log metrics
+   * 删除日志指标
    */
   private[log] def removeLogMetrics(): Unit = {
     removeMetric("NumLogSegments", tags)

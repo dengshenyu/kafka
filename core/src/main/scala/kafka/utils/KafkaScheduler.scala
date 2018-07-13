@@ -51,6 +51,13 @@ trait Scheduler {
    * @param delay The amount of time to wait before the first execution
    * @param period The period with which to execute the task. If < 0 the task will execute only once.
    * @param unit The unit for the preceding times.
+   *
+   * 执行一个调度任务
+   *
+   * 参数 name: 任务名称
+   * 参数 delay: 在第一次执行前需要等待的时间
+   * 参数 period: 每次执行任务之间的时间间隔, 如果小于0则任务只执行一次
+   * 参数 unit: 时间间隔的单位
    */
   def schedule(name: String, fun: ()=>Unit, delay: Long = 0, period: Long = -1, unit: TimeUnit = TimeUnit.MILLISECONDS)
 }
@@ -134,7 +141,8 @@ class KafkaScheduler(val threads: Int,
       executor != null
     }
   }
-  
+
+  //确保调度器在运行
   private def ensureRunning(): Unit = {
     if (!isStarted)
       throw new IllegalStateException("Kafka scheduler is not running.")

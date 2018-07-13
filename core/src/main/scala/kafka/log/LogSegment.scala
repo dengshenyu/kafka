@@ -700,6 +700,7 @@ class LogSegment private[log] (val log: FileRecords,
 
   /**
    * Delete this log segment from the filesystem.
+   * 在文件系统中删除此日志段
    */
   def deleteIfExists() {
     def delete(delete: () => Boolean, fileType: String, file: File, logIfMissing: Boolean): Unit = {
@@ -747,7 +748,7 @@ class LogSegment private[log] (val log: FileRecords,
 object LogSegment {
 
   /**
-   * 打开日志段
+   * 打开(或创建)日志段
    * @param dir 日志段目录
    * @param baseOffset 日志段基准位移
    * @param config 日志段配置

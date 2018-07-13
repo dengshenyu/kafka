@@ -416,6 +416,7 @@ object ProducerStateManager {
   private val CrcOffset = VersionOffset + 2
   private val ProducerEntriesOffset = CrcOffset + 4
 
+  //生产者快照中每一个生产者状态条目的格式
   val ProducerSnapshotEntrySchema = new Schema(
     new Field(ProducerIdField, Type.INT64, "The producer ID"),
     new Field(ProducerEpochField, Type.INT16, "Current epoch of the producer"),
@@ -425,6 +426,7 @@ object ProducerStateManager {
     new Field(TimestampField, Type.INT64, "Max timestamp from the last written entry"),
     new Field(CoordinatorEpochField, Type.INT32, "The epoch of the last transaction coordinator to send an end transaction marker"),
     new Field(CurrentTxnFirstOffsetField, Type.INT64, "The first offset of the on-going transaction (-1 if there is none)"))
+  //生产者快照文件的格式
   val PidSnapshotMapSchema = new Schema(
     new Field(VersionField, Type.INT16, "Version of the snapshot file"),
     new Field(CrcField, Type.UNSIGNED_INT32, "CRC of the snapshot data"),
@@ -465,13 +467,25 @@ object ProducerStateManager {
     }
   }
 
+  /**
+   * 写入快照文件
+   * @param file: 快照文件
+   * @param entries: 生产者信息
+   */
   private def writeSnapshot(file: File, entries: mutable.Map[Long, ProducerStateEntry]) {
+    //根据结构创建一个序列化struct
     val struct = new Struct(PidSnapshotMapSchema)
+
+    //设置快照版本
     struct.set(VersionField, ProducerSnapshotVersion)
+
+    //CRC校验和, 后面会覆盖这里的值
     struct.set(CrcField, 0L) // we'll fill this after writing the entries
+
     val entriesArray = entries.map {
       case (producerId, entry) =>
         val producerEntryStruct = struct.instance(ProducerEntriesField)
+        //设置每个生产者信息
         producerEntryStruct.set(ProducerIdField, producerId)
           .set(ProducerEpochField, entry.producerEpoch)
           .set(LastSequenceField, entry.lastSeq)
@@ -482,16 +496,20 @@ object ProducerStateManager {
           .set(CurrentTxnFirstOffsetField, entry.currentTxnFirstOffset.getOrElse(-1L))
         producerEntryStruct
     }.toArray
+    //保存所有的生产者信息
     struct.set(ProducerEntriesField, entriesArray)
 
+    //序列化
     val buffer = ByteBuffer.allocate(struct.sizeOf)
     struct.writeTo(buffer)
     buffer.flip()
 
     // now fill in the CRC
+    // 填充CRC校验和
     val crc = Crc32C.compute(buffer, ProducerEntriesOffset, buffer.limit() - ProducerEntriesOffset)
     ByteUtils.writeUnsignedInt(buffer, CrcOffset, crc)
 
+    //写入文件
     val fos = new FileOutputStream(file)
     try {
       fos.write(buffer.array, buffer.arrayOffset, buffer.limit())
@@ -503,6 +521,11 @@ object ProducerStateManager {
   private def isSnapshotFile(file: File): Boolean = file.getName.endsWith(Log.ProducerSnapshotFileSuffix)
 
   // visible for testing
+  /**
+   * 获取目录dir下的所有快照文件(以.snapshot结尾)
+   * @param dir
+   * @return
+   */
   private[log] def listSnapshotFiles(dir: File): Seq[File] = {
     if (dir.exists && dir.isDirectory) {
       Option(dir.listFiles).map { files =>
@@ -512,6 +535,7 @@ object ProducerStateManager {
   }
 
   // visible for testing
+  //删除目录dir下所有位移比参数offset小的快照文件
   private[log] def deleteSnapshotsBefore(dir: File, offset: Long): Unit = deleteSnapshotFiles(dir, _ < offset)
 
   private def deleteSnapshotFiles(dir: File, predicate: Long => Boolean = _ => true) {
@@ -599,6 +623,7 @@ class ProducerStateManager(val topicPartition: TopicPartition,
 
   /**
    * Returns the last offset of this map
+   * 返回此map的最新位移
    */
   def mapEndOffset = lastMapOffset
 
@@ -734,11 +759,16 @@ class ProducerStateManager(val topicPartition: TopicPartition,
 
   /**
    * Take a snapshot at the current end offset if one does not already exist.
+   * 在当前结束位移生成一个快照
    */
   def takeSnapshot(): Unit = {
     // If not a new offset, then it is not worth taking another snapshot
+    // 只有位移比上一次快照位移之后更新了才生成快照
     if (lastMapOffset > lastSnapOffset) {
+      //创建快照文件
       val snapshotFile = Log.producerSnapshotFile(logDir, lastMapOffset)
+
+      //写入生产者快照
       info(s"Writing producer snapshot at offset $lastMapOffset")
       writeSnapshot(snapshotFile, producers)
 

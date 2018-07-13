@@ -191,6 +191,9 @@ public class FileRecords extends AbstractRecords implements Closeable {
      * @throws IOException if deletion fails due to an I/O error
      * @return  {@code true} if the file was deleted by this method; {@code false} if the file could not be deleted
      *          because it did not exist
+     * 在文件系统中删除此消息集
+     * 抛出 IOException: 如果由于I/O异常导致删除失败
+     * 返回 : 如果删除文件成功则返回true, 如果文件不存在则返回false
      */
     public boolean deleteIfExists() throws IOException {
         Utils.closeQuietly(channel, "FileChannel");

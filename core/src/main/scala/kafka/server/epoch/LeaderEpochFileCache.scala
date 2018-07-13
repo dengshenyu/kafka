@@ -44,6 +44,10 @@ trait LeaderEpochCache {
   *
   * @param leo a function that determines the log end offset
   * @param checkpoint the checkpoint file
+  *
+  * 保存副本的(LeaderEpoch => Offset)映射缓存
+  * Leader Epoch = 控制器为每个leader设置的epoch
+  * offset = 每个epoch的第一条消息位移
   */
 class LeaderEpochFileCache(topicPartition: TopicPartition, leo: () => LogOffsetMetadata, checkpoint: LeaderEpochCheckpoint) extends LeaderEpochCache with Logging {
   private val lock = new ReentrantReadWriteLock()
@@ -183,6 +187,7 @@ class LeaderEpochFileCache(topicPartition: TopicPartition, leo: () => LogOffsetM
 
   override def clear() = {
     inWriteLock(lock) {
+      //清理epoch -> offset的缓存
       epochs.clear()
     }
   }

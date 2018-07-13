@@ -33,6 +33,8 @@ public class Schema extends Type {
      * Construct the schema with a given list of its field values
      *
      * @throws SchemaException If the given list have duplicate fields
+     *
+     * 给定字段列表生成一个结构
      */
     public Schema(Field... fs) {
         this.fields = new BoundField[fs.length];
