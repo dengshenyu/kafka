@@ -679,7 +679,7 @@ class Log(@volatile var dir: File,
   }
 
   /**
-   * 更新下一条消息位移
+   * 更新日志结束位移(也就是下一条消息位移)
    * @param messageOffset
    */
   private def updateLogEndOffset(messageOffset: Long) {
@@ -1157,7 +1157,11 @@ class Log(@volatile var dir: File,
   }
 
   /**
-   * 更新第一条unstable位移
+   * 更新第一条unstable消息位移.
+   *
+   * 内部会根据producerStateManager来获取"未复制事务消息"和"未完成事务消息"中的位移最小者, 然后将其与日志起始位移比较取最大值,
+   * 此值为第一条unstable消息.
+   *
    */
   private def updateFirstUnstableOffset(): Unit = lock synchronized {
     checkIfMemoryMappedBufferClosed()
@@ -2127,14 +2131,23 @@ class Log(@volatile var dir: File,
           fileAlreadyExists = false,
           initFileSize = initFileSize,
           preallocate = config.preallocate))
+
+        //更新日志结束位移
         updateLogEndOffset(newOffset)
+
+        //清除leader epoch缓存信息
         _leaderEpochCache.clearAndFlush()
 
+        //截断清理生产者状态, 重置其mapEndOffset
         producerStateManager.truncate()
         producerStateManager.updateMapEndOffset(newOffset)
+        //更新第一条unstable消息位移
         updateFirstUnstableOffset()
 
+        //更新恢复点
         this.recoveryPoint = math.min(newOffset, this.recoveryPoint)
+
+        //更新日志最早位移
         this.logStartOffset = newOffset
       }
     }
@@ -2142,11 +2155,13 @@ class Log(@volatile var dir: File,
 
   /**
    * The time this log is last known to have been fully flushed to disk
+   * 此日志上一次刷盘时间点
    */
   def lastFlushTime: Long = lastFlushedTime.get
 
   /**
    * The active segment that is currently taking appends
+   * 当前追加消息的日志段
    */
   def activeSegment = segments.lastEntry.getValue
 
@@ -2436,26 +2451,34 @@ class Log(@volatile var dir: File,
 object Log {
 
   /** a log file */
+  //日志文件后缀
   val LogFileSuffix = ".log"
 
   /** an index file */
+  //位移索引文件后缀
   val IndexFileSuffix = ".index"
 
   /** a time index file */
+  //时间戳索引文件后缀
   val TimeIndexFileSuffix = ".timeindex"
 
+  //生产者快照文件后缀
   val ProducerSnapshotFileSuffix = ".snapshot"
 
   /** an (aborted) txn index */
+  //(已终止)事务索引文件后缀
   val TxnIndexFileSuffix = ".txnindex"
 
   /** a file that is scheduled to be deleted */
+  //调度删除的文件后缀
   val DeletedFileSuffix = ".deleted"
 
   /** A temporary file that is being used for log cleaning */
+  //用来做日志清理的临时文件后缀
   val CleanedFileSuffix = ".cleaned"
 
   /** A temporary file used when swapping files into the log */
+  //用来做文件swap的临时文件
   val SwapFileSuffix = ".swap"
 
   /** Clean shutdown file that indicates the broker was cleanly shutdown in 0.8 and higher.
@@ -2463,13 +2486,19 @@ object Log {
    * avoided by passing in the recovery point, however finding the correct position to do this
    * requires accessing the offset index which may not be safe in an unclean shutdown.
    * For more information see the discussion in PR#2104
+   *
+   * 此文件在0.8版本或更高版本中用来标识broker是优雅退出的, 这样可以避免在优雅退出后重启时不必要的故障恢复.
+   * 理论上也可以通过恢复点来实现, 但是故障恢复点依赖位移索引文件来查询正确的文件内物理偏移, 而在非优雅关机下
+    * 索引文件可能也会被损坏.
    */
   val CleanShutdownFile = ".kafka_cleanshutdown"
 
   /** a directory that is scheduled to be deleted */
+  //调度删除的目录后缀
   val DeleteDirSuffix = "-delete"
 
   /** a directory that is used for future partition */
+  //计划未来用来做分区目录的目录后缀
   val FutureDirSuffix = "-future"
 
   private val DeleteDirPattern = Pattern.compile(s"^(\\S+)-(\\S+)\\.(\\S+)$DeleteDirSuffix")
@@ -2487,8 +2516,11 @@ object Log {
             maxProducerIdExpirationMs: Int,
             producerIdExpirationCheckIntervalMs: Int,
             logDirFailureChannel: LogDirFailureChannel): Log = {
+    //获取主题和分区信息
     val topicPartition = Log.parseTopicPartitionName(dir)
+    //创建生产者状态管理者
     val producerStateManager = new ProducerStateManager(topicPartition, dir, maxProducerIdExpirationMs)
+    //创建日志
     new Log(dir, config, logStartOffset, recoveryPoint, scheduler, brokerTopicStats, time, maxProducerIdExpirationMs,
       producerIdExpirationCheckIntervalMs, topicPartition, producerStateManager, logDirFailureChannel)
   }
@@ -2610,6 +2642,7 @@ object Log {
 
   /**
    * Parse the topic and partition out of the directory name of a log
+   * 根据日志的目录名称获取主题和分区
    */
   def parseTopicPartitionName(dir: File): TopicPartition = {
     if (dir == null)

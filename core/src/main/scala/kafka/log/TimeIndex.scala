@@ -48,6 +48,22 @@ import org.apache.kafka.common.record.RecordBatch
  *
  * No attempt is made to checksum the contents of this file, in the event of a crash it is rebuilt.
  *
+ * 一个将时间戳映射为消息位移的索引. 这个索引可能是稀疏的, 也就是说它可能不会包含所有消息的索引.
+ *
+ * 此索引存储在一个文件中, 该文件预分配了能够包含最大数量的12字节索引条目空间. 文件包含一列时间戳索引条目, 每个条目为8字节的时间戳
+ * 和4字节的相对位移, 该相对位移在OffsetIndex这个索引中定义. 一个时间索引条目(TIMESTAMP, OFFSET)意味着位移小于等于OFFSET的最大时间戳
+ * 为TIMESTAMP, 也就是说任何时间戳大于TIMESTAMP的消息位移肯定大于OFFSET.
+ *
+ * 所有暴露的API已经将相对位移转换成消息位移, 因此此类内部存储格式对使用者透明.
+ *
+ * 一个时间戳索引内部的索引保证是单调递增的.
+ *
+ * 此索引使用一个内存映射区域来支持查询, 场景为查询时间戳小于等于目标时间戳的最大时间戳消息位移, 查询时使用二分搜索.
+ *
+ * 此索引文件有两种打开方式: 1)以空文件并且可修改的方式打开, 允许不断追加条目; 2)以不可修改的只读方式打开, 这种文件之前已经填充完毕.
+ * makeReadOnly方法可以将一个可修改的文件变成一个不可修改的文件, 并且截断任何冗余字节, 此方法在索引文件滚动时使用.
+ *
+ * 此文件没有做内容校验, 如果损坏了则进行重建.
  */
 // Avoid shadowing mutable file in AbstractIndex
 class TimeIndex(_file: File, baseOffset: Long, maxIndexSize: Int = -1, writable: Boolean = true)

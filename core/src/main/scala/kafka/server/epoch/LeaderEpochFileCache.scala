@@ -177,10 +177,13 @@ class LeaderEpochFileCache(topicPartition: TopicPartition, leo: () => LogOffsetM
 
   /**
     * Delete all entries.
+    * 删除所有条目
     */
   override def clearAndFlush() = {
     inWriteLock(lock) {
+      //清理缓存
       epochs.clear()
+      //刷盘
       flush()
     }
   }

@@ -47,6 +47,24 @@ import org.apache.kafka.common.errors.InvalidOffsetException
  *
  * All external APIs translate from relative offsets to full offsets, so users of this class do not interact with the internal
  * storage format.
+ *
+ * 这个索引将日志段的消息位移映射到文件内的物理偏移, 另外它是稀疏的, 也就是说不会包含所有消息的索引条目.
+ *
+ * 此索引存储在一个文件中, 该文件预分配了能够包含最大数量的8字节索引条目的存储空间.
+ *
+ * 此索引使用了一个内存映射区域来做查询, 这些查询使用二分搜索来在查找小于等于目标位移的最大位移的场景下返回索引条目(位移/物理偏移).
+ *
+ * 索引文件有两种打开方式: 1)以空文件并且可修改的方式打开, 允许不断追加条目; 2)以不可修改的只读方式打开, 这种文件之前已经填充完毕.
+ * makeReadOnly方法可以将一个可修改的文件变成一个不可修改的文件, 并且截断任何冗余字节, 此方法在索引文件滚动时使用.
+ *
+ * 此文件没有做内容校验, 如果损坏了则进行重建.
+ *
+ * 索引文件包含一系列的索引条目, 每个索引条目的物理格式为4字节的相对位移和4字节的文件内物理偏移. 相对位移, 是相对于该索引(或日志段)
+ * 的基准位移. 举个例子, 如果基准位移为50, 那么消息位移为55的将会存储为5. 使用相对位移是为了可以使用4字节来存储位移.
+ *
+ * 建立索引的频率是由使用者来决定的.
+ *
+ * 所有暴露的API都会将相对位移转换成真正的消息位移, 因此此类的内部存储格式对使用者透明.
  */
 // Avoid shadowing mutable `file` in AbstractIndex
 class OffsetIndex(_file: File, baseOffset: Long, maxIndexSize: Int = -1, writable: Boolean = true)

@@ -561,6 +561,16 @@ object ProducerStateManager {
  * age. This ensures that producer ids will not be expired until either the max expiration time has been reached,
  * or if the topic also is configured for deletion, the segment containing the last written offset has
  * been deleted.
+ *
+ * 保存生产者ID与其最后追加消息元数据的映射, 元数据例如epoch, 序列号, 最后位移等等.
+ *
+ * 序列号为追加到分区的最后标识符数字.
+ * epoch用来防止僵尸生产者.
+ * 位移为最后追加的消息位移.
+ *
+ * 只要一个生产者ID存在此map中, 其对应的生产者可以写入数据. 如果生产者超过一定时间不活跃或者最后写入的条目已经被删除(例如由于日志保留
+ * 策略为"deleted"), 那么生产者ID会过期. 对于compact格式的主题, 日志cleaner会保证对于生产者ID保留的是最新的未过期条目. 这保证了
+ * 只有到达了最大超时时间,或者日志保留策略设置为"deleted"并且包含最后写入位移的日志段已经被删除, 生产者ID才会过期.
  */
 @nonthreadsafe
 class ProducerStateManager(val topicPartition: TopicPartition,
@@ -594,7 +604,7 @@ class ProducerStateManager(val topicPartition: TopicPartition,
     //获取第一条正在进行中的事务消息位移
     val undecidedFirstOffset = Option(ongoingTxns.firstEntry).map(_.getValue.firstOffset)
 
-    //以下代码获取unreplicatedFirstOffset和undecidedFirstOffset的最小值(需要判空)
+    //以下代码获取上述位移的最小值(需要判空)
     if (unreplicatedFirstOffset.isEmpty)
       undecidedFirstOffset
     else if (undecidedFirstOffset.isEmpty)
@@ -856,12 +866,18 @@ class ProducerStateManager(val topicPartition: TopicPartition,
 
   /**
    * Truncate the producer id mapping and remove all snapshots. This resets the state of the mapping.
+   * 截断清理生产者映射并删除所有快照文件, 重置映射状态.
    */
   def truncate() {
+    //清理生产者映射
     producers.clear()
+    //清理进行中的事务数据
     ongoingTxns.clear()
+    //清理未复制的事务
     unreplicatedTxns.clear()
+    //删除生产者快照文件
     deleteSnapshotFiles(logDir)
+    //重置映射状态
     lastSnapOffset = 0L
     lastMapOffset = 0L
   }

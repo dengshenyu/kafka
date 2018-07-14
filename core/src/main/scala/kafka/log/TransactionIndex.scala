@@ -41,7 +41,7 @@ private[log] case class TxnIndexSearchResult(abortedTransactions: List[AbortedTx
  * may span multiple segments. Recovering the index therefore requires scanning the earlier segments in
  * order to find the start of the transactions.
  *
- * 事务索引包含了日志段已终止事务的元数据, 这包括已终止事务的开始和结束位移, 以及终止事务时的最后stable位移(LSO).
+ * 事务索引包含了已终止事务的元数据, 这包括已终止事务的开始和结束位移, 以及终止事务时的最后stable位移(LSO).
  * 在消费者以READ_COMMITTED级别拉取消息时, 这个索引用来查询拉取范围内的已终止事务.
  *
  * 每个日志段最多只有一个事务索引, 索引条目映射日志段中的事务,这些事务的commit标记记录在日志段中. 需要注意的是, 单个事务可能
