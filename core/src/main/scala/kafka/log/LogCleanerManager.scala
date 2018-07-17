@@ -46,6 +46,12 @@ private[log] case object LogCleaningPaused extends LogCleaningState
  *  the LogCleaningAborted state. Once the cleaning task is aborted, the partition enters the LogCleaningPaused state.
  *  While a partition is in the LogCleaningPaused state, it won't be scheduled for cleaning again, until cleaning is
  *  requested to be resumed.
+ *
+ *  管理清理中的分区状态.
+ *  如果一个分区即将被清理, 那么它进入LogCleaningInProgress状态.
+ *  如果一个分区正在被清理, 清理过程可以被终止或暂停. 在这种情况下, 分区会首先进入LogCleaningAborted状态. 一旦清理任务被终止,
+ *  分区就会进入LogCleaningPaused状态.
+ *  如果一个分区进入了LogCleaningPaused状态, 它不会被清理直到重新发起清理请求
  */
 private[log] class LogCleanerManager(val logDirs: Seq[File],
                                      val logs: Pool[TopicPartition, Log],
@@ -59,28 +65,35 @@ private[log] class LogCleanerManager(val logDirs: Seq[File],
   private[log] val offsetCheckpointFile = "cleaner-offset-checkpoint"
 
   /* the offset checkpoints holding the last cleaned point for each log */
+  // 此位移检查点为每个日志保存上一次的清理点
   @volatile private var checkpoints = logDirs.map(dir =>
     (dir, new OffsetCheckpointFile(new File(dir, offsetCheckpointFile), logDirFailureChannel))).toMap
 
   /* the set of logs currently being cleaned */
+  //当前正在被清理的日志
   private val inProgress = mutable.HashMap[TopicPartition, LogCleaningState]()
 
   /* a global lock used to control all access to the in-progress set and the offset checkpoints */
+  // 一个同步访问inProgress和checkpoints的全局锁
   private val lock = new ReentrantLock
 
   /* for coordinating the pausing and the cleaning of a partition */
+  // 用来同步分区暂停和清理的条件量
   private val pausedCleaningCond = lock.newCondition()
 
   /* a gauge for tracking the cleanable ratio of the dirtiest log */
+  // 用来记录最脏日志的可清理比例的指标
   @volatile private var dirtiestLogCleanableRatio = 0.0
   newGauge("max-dirty-percent", new Gauge[Int] { def value = (100 * dirtiestLogCleanableRatio).toInt })
 
   /* a gauge for tracking the time since the last log cleaner run, in milli seconds */
+  // 用来记录上一次清理至今的时间, 单位为毫秒
   @volatile private var timeOfLastRun : Long = Time.SYSTEM.milliseconds
   newGauge("time-since-last-run-ms", new Gauge[Long] { def value = Time.SYSTEM.milliseconds - timeOfLastRun })
 
   /**
    * @return the position processed for all logs.
+   * 返回 日志上一次处理的位置
    */
   def allCleanerCheckpoints: Map[TopicPartition, Long] = {
     inLock(lock) {
@@ -118,6 +131,9 @@ private[log] class LogCleanerManager(val logDirs: Seq[File],
     * Choose the log to clean next and add it to the in-progress set. We recompute this
     * each time from the full set of logs to allow logs to be dynamically added to the pool of logs
     * the log manager maintains.
+    *
+    * 选择需要进行清理的日志, 并把它加入到in-progress集合中. 这里每次都会从全量日志中计算, 这样可以允许
+    * 日志可以动态增加到日志池中
     */
   def grabFilthiestCompactedLog(time: Time): Option[LogToClean] = {
     inLock(lock) {
@@ -125,24 +141,36 @@ private[log] class LogCleanerManager(val logDirs: Seq[File],
       this.timeOfLastRun = now
       val lastClean = allCleanerCheckpoints
       val dirtyLogs = logs.filter {
+        //筛选出使用compact策略的日志
         case (_, log) => log.config.compact  // match logs that are marked as compacted
       }.filterNot {
+        //去除正在进行清理的日志
         case (topicPartition, _) => inProgress.contains(topicPartition) // skip any logs already in-progress
       }.map {
+        //为每个日志创建一个LogToClean实例
         case (topicPartition, log) => // create a LogToClean instance for each
+          //获取脏日志的初始位移和不可清理的脏日志部分初始位移
           val (firstDirtyOffset, firstUncleanableDirtyOffset) = LogCleanerManager.cleanableOffsets(log, topicPartition,
             lastClean, now)
           LogToClean(topicPartition, log, firstDirtyOffset, firstUncleanableDirtyOffset)
-      }.filter(ltc => ltc.totalBytes > 0) // skip any empty logs
+      }.filter(ltc => ltc.totalBytes > 0) // 跳过空日志
 
+      //脏日志的最大可清理比例
       this.dirtiestLogCleanableRatio = if (dirtyLogs.nonEmpty) dirtyLogs.max.cleanableRatio else 0
+
       // and must meet the minimum threshold for dirty byte ratio
+      // 保证可清理比例大于配置的最小清理比例
       val cleanableLogs = dirtyLogs.filter(ltc => ltc.cleanableRatio > ltc.log.config.minCleanableRatio)
       if(cleanableLogs.isEmpty) {
         None
       } else {
+        //找出最脏的日志
         val filthiest = cleanableLogs.max
+
+        //加到正在进行中的集合里面去
         inProgress.put(filthiest.topicPartition, LogCleaningInProgress)
+
+        //返回结果
         Some(filthiest)
       }
     }
@@ -353,14 +381,22 @@ private[log] object LogCleanerManager extends Logging {
     * @param lastClean the map of checkpointed offsets
     * @param now the current time in milliseconds of the cleaning operation
     * @return the lower (inclusive) and upper (exclusive) offsets
+    *
+    * 获取可清理的脏日志范围
+    * 参数 log: 日志
+    * 参数 lastClean: 上一次清理位移
+    * 参数 now: 当前时间, 单位毫秒
+    * 返回 范围下限(包括)和上限(不包括)
     */
   def cleanableOffsets(log: Log, topicPartition: TopicPartition, lastClean: immutable.Map[TopicPartition, Long], now: Long): (Long, Long) = {
 
     // the checkpointed offset, ie., the first offset of the next dirty segment
+    // 检查点位移, 也就是脏日志的初始位移
     val lastCleanOffset: Option[Long] = lastClean.get(topicPartition)
 
     // If the log segments are abnormally truncated and hence the checkpointed offset is no longer valid;
     // reset to the log starting offset and log the error
+    // 如果日志段意外被截断(即检查点位移小于当前日志初始位移), 那么检查点位移失效, 重新设置为日志初始位移并记录异常
     val logStartOffset = log.logSegments.head.baseOffset
     val firstDirtyOffset = {
       val offset = lastCleanOffset.getOrElse(logStartOffset)
@@ -374,20 +410,25 @@ private[log] object LogCleanerManager extends Logging {
       }
     }
 
+    //获取compact的延后时间
     val compactionLagMs = math.max(log.config.compactionLagMs, 0L)
 
     // find first segment that cannot be cleaned
     // neither the active segment, nor segments with any messages closer to the head of the log than the minimum compaction lag time
     // may be cleaned
+    // 获取第一个不能被清理的日志段, 该日志段或者正在追加日志, 或者消息时间戳在compact延后时间之内
     val firstUncleanableDirtyOffset: Long = Seq(
 
       // we do not clean beyond the first unstable offset
+      // 清理操作不会越过unstable位移(也就是未完成事务或未复制事务的最小位移)
       log.firstUnstableOffset.map(_.messageOffset),
 
       // the active segment is always uncleanable
+      // 当前正在追加消息的日志段总是不可清理的
       Option(log.activeSegment.baseOffset),
 
       // the first segment whose largest message timestamp is within a minimum time lag from now
+      // 获取第一个最大消息时间戳在延后时间之内的日志段
       if (compactionLagMs > 0) {
         // dirty log segments
         val dirtyNonActiveSegments = log.logSegments(firstDirtyOffset, log.activeSegment.baseOffset)
@@ -397,6 +438,8 @@ private[log] object LogCleanerManager extends Logging {
           isUncleanable
         }.map(_.baseOffset)
       } else None
+
+    //然后取上面三者的最小值作为不可清理的脏日志初始位移
     ).flatten.min
 
     debug(s"Finding range of cleanable offsets for log=${log.name} topicPartition=$topicPartition. Last clean offset=$lastCleanOffset now=$now => firstDirtyOffset=$firstDirtyOffset firstUncleanableOffset=$firstUncleanableDirtyOffset activeSegment.baseOffset=${log.activeSegment.baseOffset}")

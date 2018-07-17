@@ -113,6 +113,8 @@ public class FileRecords extends AbstractRecords implements Closeable {
      * @param position Position in the buffer to read from
      * @throws IOException If an I/O error occurs, see {@link FileChannel#read(ByteBuffer, long)} for details on the
      * possible exceptions
+     *
+     * 读取日志batch到指定缓冲区, 直到缓冲区没有存放空间或者到达文件尾
      */
     public void readInto(ByteBuffer buffer, int position) throws IOException {
         Utils.readFully(channel, buffer, position + this.start);

@@ -41,8 +41,8 @@ private[log] case class TxnIndexSearchResult(abortedTransactions: List[AbortedTx
  * may span multiple segments. Recovering the index therefore requires scanning the earlier segments in
  * order to find the start of the transactions.
  *
- * 事务索引包含了已终止事务的元数据, 这包括已终止事务的开始和结束位移, 以及终止事务时的最后stable位移(LSO).
- * 在消费者以READ_COMMITTED级别拉取消息时, 这个索引用来查询拉取范围内的已终止事务.
+ * 事务索引包含了已回滚事务的元数据, 这包括已回滚事务的开始和结束位移, 以及回滚事务时的最后stable位移(LSO).
+ * 在消费者以READ_COMMITTED级别拉取消息时, 这个索引用来查询拉取范围内的已回滚事务.
  *
  * 每个日志段最多只有一个事务索引, 索引条目映射日志段中的事务,这些事务的commit标记记录在日志段中. 需要注意的是, 单个事务可能
  * 横跨若干个日志段, 因此恢复索引时需要扫描更早的日志段来找到事务的开始.
@@ -57,7 +57,7 @@ class TransactionIndex(val startOffset: Long, @volatile var file: File) extends 
     openChannel()
 
   /**
-   * 增加终止事务的索引
+   * 增加回滚事务的索引
    * @param abortedTxn
    */
   def append(abortedTxn: AbortedTxn): Unit = {
@@ -188,11 +188,11 @@ class TransactionIndex(val startOffset: Long, @volatile var file: File) extends 
    * @return An object containing the aborted transactions and whether the search needs to continue
    *         into the next log segment.
    *
-   * 收集所有与指定拉取范围重叠的已终止事务
+   * 收集所有与指定拉取范围重叠的已回滚事务
    *
    * 参数 fetchOffset: 拉取范围的起始位移(包含)
    * 参数 upperBoundOffset: 拉取范围的最后位移(不包含)
-   * 返回 一个实例, 该实例包含终止事务和指示是否需要在下一个日志段继续搜索的指示器
+   * 返回 一个实例, 该实例包含回滚事务和指示是否需要在下一个日志段继续搜索的指示器
    */
   def collectAbortedTxns(fetchOffset: Long, upperBoundOffset: Long): TxnIndexSearchResult = {
     val abortedTransactions = ListBuffer.empty[AbortedTxn]

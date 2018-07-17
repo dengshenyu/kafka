@@ -1521,6 +1521,12 @@ class Log(@volatile var dir: File,
     }
   }
 
+  /**
+   * 获取从startOffset(包含)到upperBoundOffset(不包含)之间已回滚的事务
+   * @param startOffset
+   * @param upperBoundOffset
+   * @return
+   */
   private[log] def collectAbortedTransactions(startOffset: Long, upperBoundOffset: Long): List[AbortedTxn] = {
     val segmentEntry = segments.floorEntry(startOffset)
     val allAbortedTxns = ListBuffer.empty[AbortedTxn]
@@ -1543,12 +1549,12 @@ class Log(@volatile var dir: File,
         logEndOffset
     }
 
-    //获取与拉取范围[startOffset,upperBoundOffset) 有重叠的已终止事务
+    //获取与拉取范围[startOffset,upperBoundOffset) 有重叠的已回滚事务
     val abortedTransactions = ListBuffer.empty[AbortedTransaction]
     def accumulator(abortedTxns: List[AbortedTxn]): Unit = abortedTransactions ++= abortedTxns.map(_.asAbortedTransaction)
     collectAbortedTransactions(startOffset, upperBoundOffset, segmentEntry, accumulator)
 
-    //返回带有已终止事务的拉取信息
+    //返回带有已回滚事务的拉取信息
     FetchDataInfo(fetchOffsetMetadata = fetchInfo.fetchOffsetMetadata,
       records = fetchInfo.records,
       firstEntryIncomplete = fetchInfo.firstEntryIncomplete,
@@ -1556,12 +1562,12 @@ class Log(@volatile var dir: File,
   }
 
   /**
-   * 查询拉取范围内的已终止事务
+   * 查询拉取范围内的已回滚事务
    *
    * @param startOffset: 拉取范围起始端(包含)
    * @param upperBoundOffset: 拉取范围结束端(不包含)
    * @param startingSegmentEntry: 开始查询的日志段
-   * @param accumulator: 已终止事务的收集器
+   * @param accumulator: 已回滚事务的收集器
    */
   private def collectAbortedTransactions(startOffset: Long, upperBoundOffset: Long,
                                          startingSegmentEntry: JEntry[JLong, LogSegment],
@@ -2175,7 +2181,7 @@ class Log(@volatile var dir: File,
    * Get all segments beginning with the segment that includes "from" and ending with the segment
    * that includes up to "to-1" or the end of the log (if to > logEndOffset)
    */
-  //返回 [from, to) 之间的日志段
+  //返回基准位移在[from, to) 之间的日志段, 注意这里包括from但不包括to
   def logSegments(from: Long, to: Long): Iterable[LogSegment] = {
     lock synchronized {
       val view = Option(segments.floorKey(from)).map { floor =>

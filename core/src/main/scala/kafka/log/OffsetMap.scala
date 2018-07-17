@@ -39,6 +39,10 @@ trait OffsetMap {
  * for comparisons and to save space on object overhead. Collisions are resolved by probing. This hash table does not support deletes.
  * @param memory The amount of memory this map can use
  * @param hashAlgorithm The hash algorithm instance to use: MD2, MD5, SHA-1, SHA-256, SHA-384, SHA-512
+ *
+ * 一个用于做日志去重的哈希表. 此哈希表使用密码学安全算法来进行key的哈希比较. 对于哈希冲突使用探测方法进行解决.此哈希表不支持删除.
+ * 参数 memory: 此哈希表使用的内存大小
+ * 参数 hashAlgorithm: 哈希算法: MD2, MD5, SHA-1, SHA-256, SHA-384, SHA-512
  */
 @nonthreadsafe
 class SkimpyOffsetMap(val memory: Int, val hashAlgorithm: String = "MD5") extends OffsetMap {

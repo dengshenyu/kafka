@@ -490,7 +490,7 @@ class LogSegment private[log] (val log: FileRecords,
   }
 
   /**
-   * 获取拉取范围的已终止事务
+   * 获取拉取范围的已回滚事务
    *
    * @param fetchOffset
    * @param upperBoundOffset

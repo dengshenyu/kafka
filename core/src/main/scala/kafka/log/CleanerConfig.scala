@@ -28,6 +28,17 @@ package kafka.log
  * @param backOffMs The amount of time to wait before rechecking if no logs are eligible for cleaning
  * @param enableCleaner Allows completely disabling the log cleaner
  * @param hashAlgorithm The hash algorithm to use in key comparison.
+ *
+ * 日志cleaner的配置参数
+ *
+ * 参数 numThreads: cleaner线程数
+ * 参数 dedupeBufferSize: 用于日志解耦合的总内存大小
+ * 参数 dedupeBufferLoadFactor: 解耦合缓冲区的负载因子
+ * 参数 maxMessageSize: 日志中一个消息的最大大小
+ * 参数 maxIoBytesPerSecond: 所有cleaner线程的IO读写带宽
+ * 参数 backOffMs: 没有日志需要清理时下一次检查前的等待时间
+ * 参数 enableCleaner: 是否关闭cleaner
+ * 参数 hashAlgorithm: 在key比较时使用的哈希算法
  */
 case class CleanerConfig(numThreads: Int = 1,
                          dedupeBufferSize: Long = 4*1024*1024L,

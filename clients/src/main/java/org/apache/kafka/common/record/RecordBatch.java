@@ -189,6 +189,8 @@ public interface RecordBatch extends Iterable<Record> {
      * for magic 2 and higher).
      *
      * @return The number of records in the batch or null for magic versions 0 and 1.
+     *
+     * 如果记录格式为magic 2版本或更高则返回记录个数, 否则返回null
      */
     Integer countOrNull();
 
@@ -227,6 +229,13 @@ public interface RecordBatch extends Iterable<Record> {
      *                                    batch. As such, a supplier that reuses buffers will have a significant
      *                                    performance impact.
      * @return The closeable iterator
+     *
+     * 返回一个流式迭代器, 该迭代器使用懒加载方式, 等到{@link Iterator#next()}调用获取记录时才会进行解压缩.
+     * 如果消息格式不支持流式迭代, 那么将返回普通的迭代器. 但无论哪种迭代器, 调用者都需要关闭迭代器.
+     *
+     * 参数 decompressionBufferSupplier: 解压缩时使用的缓冲区提供者.对于小的记录batch来说, 在迭代过程中不断分配大缓冲区
+     *                                  占据了解压缩的主要耗费空间. 因此使用一个复用缓冲区的提供者可以提高性能.
+     * 返回 可被关闭的迭代器
      */
     CloseableIterator<Record> streamingIterator(BufferSupplier decompressionBufferSupplier);
 

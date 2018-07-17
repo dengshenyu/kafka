@@ -33,6 +33,16 @@ trait CheckpointFileFormatter[T]{
   def fromLine(line: String): Option[T]
 }
 
+/**
+ * 检查点文件的泛型实现
+ *
+ * @param file: 磁盘文件
+ * @param version: 版本
+ * @param formatter: 用于格式化的类
+ * @param logDirFailureChannel:
+ * @param logDir
+ * @tparam T
+ */
 class CheckpointFile[T](val file: File,
                         version: Int,
                         formatter: CheckpointFileFormatter[T],

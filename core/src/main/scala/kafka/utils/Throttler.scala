@@ -34,6 +34,14 @@ import scala.math._
  * @param checkIntervalMs: The interval at which to check our rate
  * @param throttleDown: Does throttling increase or decrease our rate?
  * @param time: The time implementation to use
+ *
+ * 一个用来度量和控制特定速率的类. 此节流阀接收一个每秒最大速率参数(速率的单位可以为字节数或其他可以度量的其他指标), 在maybeThrottle()
+ * 调用时可能会sleep一段时间以保证所期望的速率.
+ *
+ * 参数 desiredRatePerSec: 我们希望控制的每秒速率
+ * 参数 checkIntervalMs: 隔多久检查一次速率
+ * 参数 throttleDown: 节流阀增加或减少速率
+ * 参数 time: 用来获取时间的实例
  */
 @threadsafe
 class Throttler(desiredRatePerSec: Double,
@@ -61,12 +69,16 @@ class Throttler(desiredRatePerSec: Double,
       // if we have completed an interval AND we have observed something, maybe
       // we should take a little nap
       if (elapsedNs > checkIntervalNs && observedSoFar > 0) {
+        //当前的每秒速率
         val rateInSecs = (observedSoFar * nsPerSec) / elapsedNs
+
         val needAdjustment = !(throttleDown ^ (rateInSecs > desiredRatePerSec))
         if (needAdjustment) {
-          // solve for the amount of time to sleep to make us hit the desired rate
+          //期望的毫秒速率
           val desiredRateMs = desiredRatePerSec / msPerSec.toDouble
+          //已经经过的时间
           val elapsedMs = TimeUnit.NANOSECONDS.toMillis(elapsedNs)
+          //睡眠时间 = (当前发生的次数 / 期望的毫秒速率) - 已经经过的时间
           val sleepTime = round(observedSoFar / desiredRateMs - elapsedMs)
           if (sleepTime > 0) {
             trace("Natural rate is %f per second but desired rate is %f, sleeping for %d ms to compensate.".format(rateInSecs, desiredRatePerSec, sleepTime))

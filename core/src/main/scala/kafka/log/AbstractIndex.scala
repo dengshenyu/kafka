@@ -37,6 +37,13 @@ import scala.math.ceil
  * @param file The index file
  * @param baseOffset the base offset of the segment that this index is corresponding to.
  * @param maxIndexSize The maximum index size in bytes.
+ *
+ * 保存索引条目的泛型抽象类
+ *
+ * 参数 file: 索引文件
+ * 参数 baseOffset: 此索引对应日志段的基准位移
+ * 参数 maxIndexSize: 索引最大字节数
+ * 参数 writable: 是否可写
  */
 abstract class AbstractIndex[K, V](@volatile var file: File, val baseOffset: Long,
                                    val maxIndexSize: Int = -1, val writable: Boolean) extends Logging {
@@ -49,12 +56,18 @@ abstract class AbstractIndex[K, V](@volatile var file: File, val baseOffset: Lon
 
   protected val lock = new ReentrantLock
 
+  /**
+   * 创建一个内存映射缓冲区
+   */
   @volatile
   protected var mmap: MappedByteBuffer = {
+    //创建并打开文件
     val newlyCreated = file.createNewFile()
     val raf = if (writable) new RandomAccessFile(file, "rw") else new RandomAccessFile(file, "r")
+
     try {
       /* pre-allocate the file if necessary */
+      //预分配文件空间, 使其根据条目大小计算出小于等于maxIndexSize的最大值
       if(newlyCreated) {
         if(maxIndexSize < entrySize)
           throw new IllegalArgumentException("Invalid max index size: " + maxIndexSize)
@@ -62,6 +75,7 @@ abstract class AbstractIndex[K, V](@volatile var file: File, val baseOffset: Lon
       }
 
       /* memory-map the file */
+      //将整个文件映射到内存
       _length = raf.length()
       val idx = {
         if (writable)
@@ -69,7 +83,9 @@ abstract class AbstractIndex[K, V](@volatile var file: File, val baseOffset: Lon
         else
           raf.getChannel.map(FileChannel.MapMode.READ_ONLY, 0, _length)
       }
+
       /* set the position in the index for the next entry */
+      // 设置下一个索引条目的位置, 如果为新索引文件则为0, 否则指向最后的文件结尾
       if(newlyCreated)
         idx.position(0)
       else
@@ -83,16 +99,19 @@ abstract class AbstractIndex[K, V](@volatile var file: File, val baseOffset: Lon
 
   /**
    * The maximum number of entries this index can hold
+   * 此索引能够包含的最大索引条目数量
    */
   @volatile
   private[this] var _maxEntries = mmap.limit() / entrySize
 
   /** The number of entries in this index */
+  //此索引目前已包含的条目数量
   @volatile
   protected var _entries = mmap.position() / entrySize
 
   /**
    * True iff there are no more slots available in this index
+   * 当前仅当此索引不能包含更多的索引槽时为true
    */
   def isFull: Boolean = _entries >= _maxEntries
 
@@ -113,7 +132,7 @@ abstract class AbstractIndex[K, V](@volatile var file: File, val baseOffset: Lon
    *
    * 重置内存映射空间和其底下文件的大小, 此方法主要在两种场景下使用:
    * 1) 在关闭日志段或者滚动日志时, 在trimToValidSize()方法中调用;
-   * 2) 在新的日志段激活时, 加载日志段或者把老日志段截断;
+   * 2) 在新的日志段即将使用时, 加载日志段或者把老日志段截断;
    * 将索引大小重置成最大可以避免滚动日志
    *
    * 参数 newSize 新索引文件的大小
@@ -387,6 +406,7 @@ abstract class AbstractIndex[K, V](@volatile var file: File, val baseOffset: Lon
   /**
    * Round a number to the greatest exact multiple of the given factor less than the given number.
    * E.g. roundDownToExactMultiple(67, 8) == 64
+   * 根据最小粒度factor计算小于等于number的最大值
    */
   private def roundDownToExactMultiple(number: Int, factor: Int) = factor * (number / factor)
 

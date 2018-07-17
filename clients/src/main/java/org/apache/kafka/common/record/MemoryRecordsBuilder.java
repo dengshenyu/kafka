@@ -239,6 +239,12 @@ public class MemoryRecordsBuilder {
      * format version is 0 or 1, in which case, it will be the offset of the record with the max timestamp.
      *
      * @return The max timestamp and its offset
+     *
+     * 获取最大时间戳及相应消息位移. 位移的具体细节稍微有点复杂.
+     *
+     * 如果使用日志追加时间, 那么位移为batch最后的位移. 除非没有使用压缩而且消息格式为0或1, 在这种情况下为batch的初始位移.
+     *
+     * 如果使用创建时间, 那么位移为batch最后的位移. 除非没有使用压缩而且消息格式为0或1, 在这种情况下为batch内具有最大时间戳的记录.
      */
     public RecordsInfo info() {
         if (timestampType == TimestampType.LOG_APPEND_TIME) {

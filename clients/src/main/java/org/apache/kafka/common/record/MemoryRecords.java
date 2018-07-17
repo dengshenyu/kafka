@@ -40,6 +40,10 @@ import java.util.Objects;
  * A {@link Records} implementation backed by a ByteBuffer. This is used only for reading or
  * modifying in-place an existing buffer of record batches. To create a new buffer see {@link MemoryRecordsBuilder},
  * or one of the {@link #builder(ByteBuffer, byte, CompressionType, TimestampType, long)} variants.
+ *
+ * 一个{@link Records}实现, 内部使用ByteBuffer保存数据. 此类只在读取消息或修改缓冲区中的记录batch时使用.
+ * 关于创建一个新的缓冲区详见{@link MemoryRecordsBuilder} 或者{@link #builder(ByteBuffer, byte, CompressionType, TimestampType, long)}
+ * 等有相同语义的方法
  */
 public class MemoryRecords extends AbstractRecords {
     private static final Logger log = LoggerFactory.getLogger(MemoryRecords.class);
@@ -107,6 +111,9 @@ public class MemoryRecords extends AbstractRecords {
      * The total number of bytes in this message set not including any partial, trailing messages. This
      * may be smaller than what is returned by {@link #sizeInBytes()}.
      * @return The number of valid bytes
+     *
+     * 获取消息集的字节数, 不包括局部不完整的消息. 返回的数值可能会小于{@link #sizeInBytes()}方法的返回值
+     * 返回 合法的字节数
      */
     public int validBytes() {
         if (validBytes >= 0)
@@ -135,6 +142,10 @@ public class MemoryRecords extends AbstractRecords {
      * @return first batch size including LOG_OVERHEAD if buffer contains header up to
      *         magic byte, null otherwise
      * @throws CorruptRecordException if record size or magic is invalid
+     *
+     * 校验第一个batch的头部并返回batch大小
+     * 返回 如果buffer中包含magic之前的头部则返回第一个batch的大小(包括LOG_OVERHEAD), 否则返回null
+     * 抛出 CorruptRecordException 如果记录或magic不合法
      */
     public Integer firstBatchSize() {
         if (buffer.remaining() < HEADER_SIZE_UP_TO_MAGIC)
@@ -157,6 +168,17 @@ public class MemoryRecords extends AbstractRecords {
      *                                    batch. As such, a supplier that reuses buffers will have a significant
      *                                    performance impact.
      * @return A FilterResult with a summary of the output (for metrics) and potentially an overflow buffer
+     *
+     * 过滤记录并写入到指定的缓冲区
+     *
+     * 参数 partition: 被过滤的分区(只用做记录日志)
+     * 参数 filter: 过滤函数
+     * 参数 destinationBuffer: 过滤后记录写入的缓冲区
+     * 参数 maxRecordBatchSize: 最大的记录batch大小. 但这个不是硬限制, 如果一个batch在过滤后超过此大小, 这里只是记录一个
+     *                          警告, 但batch仍然会创建.
+     * 参数 decompressionBufferSupplier: 用来做解压缩的ByteBuffer提供者. 对于小的记录batch来说, 在迭代过程中不断分配大缓冲区
+     *                                  占据了解压缩的主要耗费空间. 因此使用一个复用缓冲区的提供者可以提高性能.
+     * 返回 FilterResult, 结果中带有指标统计, 可能还有一个溢出的缓冲区
      */
     public FilterResult filterTo(TopicPartition partition, RecordFilter filter, ByteBuffer destinationBuffer,
                                  int maxRecordBatchSize, BufferSupplier decompressionBufferSupplier) {
@@ -179,6 +201,7 @@ public class MemoryRecords extends AbstractRecords {
         for (MutableRecordBatch batch : batches) {
             bytesRead += batch.sizeInBytes();
 
+            //检查整个batch是否被丢弃
             BatchRetention batchRetention = filter.checkBatchRetention(batch);
             if (batchRetention == BatchRetention.DELETE)
                 continue;
@@ -187,25 +210,32 @@ public class MemoryRecords extends AbstractRecords {
             // allow for the possibility that a previous version corrupted the log by writing a compressed record batch
             // with a magic value not matching the magic of the records (magic < 2). This will be fixed as we
             // recopy the messages to the destination buffer.
+            // 这里使用绝对位移来决定是否保留消息. 由于KAFKA-4298, 只能允许老版本(magic < 2)的消息污染日志, 也就是写入一个压缩的
+            // 记录batch并且使用magic值与内部记录的magic值不同. 这个问题在下面消息复制到目标缓冲区时被修复.
 
             byte batchMagic = batch.magic();
             boolean writeOriginalBatch = true;
             List<Record> retainedRecords = new ArrayList<>();
 
+            //不断处理batch内部的记录
             try (final CloseableIterator<Record> iterator = batch.streamingIterator(decompressionBufferSupplier)) {
                 while (iterator.hasNext()) {
                     Record record = iterator.next();
                     messagesRead += 1;
 
+                    //检查记录是否保留
                     if (filter.shouldRetainRecord(batch, record)) {
                         // Check for log corruption due to KAFKA-4298. If we find it, make sure that we overwrite
                         // the corrupted batch with correct data.
+                        // 检查是否由于KAFKA-4298而导致日志污染. 如果污染, 则使用正确的数据覆盖原batch
                         if (!record.hasMagic(batchMagic))
                             writeOriginalBatch = false;
 
+                        // 记录最大位移
                         if (record.offset() > maxOffset)
                             maxOffset = record.offset();
 
+                        // 加入到保留的消息列表
                         retainedRecords.add(record);
                     } else {
                         writeOriginalBatch = false;
@@ -215,6 +245,7 @@ public class MemoryRecords extends AbstractRecords {
 
             if (!retainedRecords.isEmpty()) {
                 if (writeOriginalBatch) {
+                    //直接把原batch写入到目标缓冲区
                     batch.writeTo(bufferOutputStream);
                     messagesRetained += retainedRecords.size();
                     bytesRetained += batch.sizeInBytes();
@@ -223,6 +254,7 @@ public class MemoryRecords extends AbstractRecords {
                         shallowOffsetOfMaxTimestamp = batch.lastOffset();
                     }
                 } else {
+                    //构建MemoryRecords
                     MemoryRecordsBuilder builder = buildRetainedRecordsInto(batch, retainedRecords, bufferOutputStream);
                     MemoryRecords records = builder.build();
                     int filteredBatchSize = records.sizeInBytes();
@@ -246,6 +278,7 @@ public class MemoryRecords extends AbstractRecords {
                 if (batchMagic < RecordBatch.MAGIC_VALUE_V2)
                     throw new IllegalStateException("Empty batches are only supported for magic v2 and above");
 
+                //写入空batch的头部
                 bufferOutputStream.ensureRemaining(DefaultRecordBatch.RECORD_BATCH_OVERHEAD);
                 DefaultRecordBatch.writeEmptyHeader(bufferOutputStream.buffer(), batchMagic, batch.producerId(),
                         batch.producerEpoch(), batch.baseSequence(), batch.baseOffset(), batch.lastOffset(),
@@ -255,6 +288,8 @@ public class MemoryRecords extends AbstractRecords {
 
             // If we had to allocate a new buffer to fit the filtered output (see KAFKA-5316), return early to
             // avoid the need for additional allocations.
+            // 如果分配了一个新的缓冲区来适配输出(见KAFKA-5316), 那么尽早返回以避免需要额外的空间分配.
+            // 此bufferOutputStream为Kafka的实现, 内部的缓冲区可能会根据需要来扩张.
             ByteBuffer outputBuffer = bufferOutputStream.buffer();
             if (outputBuffer != destinationBuffer)
                 return new FilterResult(outputBuffer, messagesRead, bytesRead, messagesRetained, bytesRetained,
@@ -363,6 +398,8 @@ public class MemoryRecords extends AbstractRecords {
         /**
          * Check whether the full batch can be discarded (i.e. whether we even need to
          * check the records individually).
+         *
+         * 检查整个batch是否被丢弃(也就是说是否需要进入batch内部检查单个记录)
          */
         protected abstract BatchRetention checkBatchRetention(RecordBatch batch);
 
@@ -370,6 +407,9 @@ public class MemoryRecords extends AbstractRecords {
          * Check whether a record should be retained in the log. Note that {@link #checkBatchRetention(RecordBatch)}
          * is used prior to checking individual record retention. Only records from batches which were not
          * explicitly discarded with {@link BatchRetention#DELETE} will be considered.
+         *
+         * 检查是否一个记录需要在日志中保留. 需要注意的是, {@link #checkBatchRetention(RecordBatch)} 需要在检查单个记录前
+         * 调用, 因为只需要考虑不是{@link BatchRetention#DELETE}的batch
          */
         protected abstract boolean shouldRetainRecord(RecordBatch recordBatch, Record record);
     }

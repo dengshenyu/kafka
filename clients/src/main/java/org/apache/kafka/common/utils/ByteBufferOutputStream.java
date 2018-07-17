@@ -31,6 +31,17 @@ import java.nio.ByteBuffer;
  * Hard to track bugs can happen when this class is used for the second reason and unexpected buffer expansion happens.
  * So, it's best to assume that buffer expansion can always happen. An improvement would be to create a separate class
  * that throws an error if buffer expansion is required to avoid the issue altogether.
+ *
+ * 一个使用ByteBuffer的输出流, 这个输出流会根据实际需要扩大内部ByteBuffer. 因此, 调用者应该尽量通过{@link #buffer()}
+ * 访问内部的ByteBuffer直到所有的写入都已完成.
+ *
+ * 这个类主要用于两个用途:
+ *
+ * 1. 写入一个ByteBuffer, 但可能存在需要根据实际数据来扩大此ByteBuffer的情况.
+ * 2. 写入一个ByteBuffer, 但希望使用OutputStream接口
+ *
+ * 对于第二种情况, 由于可能存在缓冲区扩张(可能不期望这样), 可能出现一些很难定位的bug. 因此最好假设缓冲区很可能发生. 可以
+ * 创建一个单独的类, 如果需要扩张缓冲区就抛出异常, 这样就避免了这个问题.
  */
 public class ByteBufferOutputStream extends OutputStream {
 
