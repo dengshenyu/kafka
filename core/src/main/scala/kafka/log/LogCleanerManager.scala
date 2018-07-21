@@ -93,7 +93,7 @@ private[log] class LogCleanerManager(val logDirs: Seq[File],
 
   /**
    * @return the position processed for all logs.
-   * 返回 日志上一次处理的位置
+   * 返回 日志上一次清理的位置
    */
   def allCleanerCheckpoints: Map[TopicPartition, Long] = {
     inLock(lock) {
@@ -132,7 +132,7 @@ private[log] class LogCleanerManager(val logDirs: Seq[File],
     * each time from the full set of logs to allow logs to be dynamically added to the pool of logs
     * the log manager maintains.
     *
-    * 选择需要进行清理的日志, 并把它加入到in-progress集合中. 这里每次都会从全量日志中计算, 这样可以允许
+    * 选择需要进行清理的日志, 并把它加入到清理中的集合. 这里每次都会从全量日志中计算, 这样可以允许
     * 日志可以动态增加到日志池中
     */
   def grabFilthiestCompactedLog(time: Time): Option[LogToClean] = {
@@ -147,8 +147,9 @@ private[log] class LogCleanerManager(val logDirs: Seq[File],
         //去除正在进行清理的日志
         case (topicPartition, _) => inProgress.contains(topicPartition) // skip any logs already in-progress
       }.map {
+        //create a LogToClean instance for each
         //为每个日志创建一个LogToClean实例
-        case (topicPartition, log) => // create a LogToClean instance for each
+        case (topicPartition, log) =>
           //获取脏日志的初始位移和不可清理的脏日志部分初始位移
           val (firstDirtyOffset, firstUncleanableDirtyOffset) = LogCleanerManager.cleanableOffsets(log, topicPartition,
             lastClean, now)
@@ -197,7 +198,9 @@ private[log] class LogCleanerManager(val logDirs: Seq[File],
    */
   def abortCleaning(topicPartition: TopicPartition) {
     inLock(lock) {
+      //终止且暂停分区的清理
       abortAndPauseCleaning(topicPartition)
+      //将分区的状态重新恢复为可清理的状态
       resumeCleaning(topicPartition)
     }
     info(s"The cleaning for partition $topicPartition is aborted")
@@ -212,21 +215,27 @@ private[log] class LogCleanerManager(val logDirs: Seq[File],
    *     throws a LogCleaningAbortedException to stop the cleaning task.
    *  4. When the cleaning task is stopped, doneCleaning() is called, which sets the state of the partition as paused.
    *  5. abortAndPauseCleaning() waits until the state of the partition is changed to paused.
+   *
+   *  终止一个特定分区的清理(如果它在清理过程中的话), 并且暂停将来的清理. 这个调用会阻塞直到该分区清理过程被终止.
    */
   def abortAndPauseCleaning(topicPartition: TopicPartition) {
     inLock(lock) {
       inProgress.get(topicPartition) match {
         case None =>
+          //如果该分区没有在清理过程中, 那么标记其为"暂停"
           inProgress.put(topicPartition, LogCleaningPaused)
         case Some(state) =>
           state match {
             case LogCleaningInProgress =>
+              //如果该分区正在清理过程中, 则先标记为"终止"
               inProgress.put(topicPartition, LogCleaningAborted)
             case LogCleaningPaused =>
             case s =>
+              //如果该分区已经被标记为"暂停"或其他状态, 那么抛出异常
               throw new IllegalStateException(s"Compaction for partition $topicPartition cannot be aborted and paused since it is in $s state.")
           }
       }
+      //定期检查该分区状态是否为"暂停"直到其为暂停位置
       while (!isCleaningInState(topicPartition, LogCleaningPaused))
         pausedCleaningCond.await(100, TimeUnit.MILLISECONDS)
     }
@@ -277,6 +286,11 @@ private[log] class LogCleanerManager(val logDirs: Seq[File],
     }
   }
 
+  /**
+   * 更新检查点文件
+   * @param dataDir
+   * @param update
+   */
   def updateCheckpoints(dataDir: File, update: Option[(TopicPartition,Long)]) {
     inLock(lock) {
       val checkpoint = checkpoints(dataDir)
@@ -298,8 +312,10 @@ private[log] class LogCleanerManager(val logDirs: Seq[File],
         checkpoints.get(sourceLogDir).flatMap(_.read().get(topicPartition)) match {
           case Some(offset) =>
             // Remove this partition from the checkpoint file in the source log directory
+            // 在原日志目录的检查点文件中删除此分区位移
             updateCheckpoints(sourceLogDir, None)
             // Add offset for this partition to the checkpoint file in the source log directory
+            // 在新的日志目录的检查点文件中增加此分区的位移
             updateCheckpoints(destLogDir, Option(topicPartition, offset))
           case None =>
         }
@@ -386,7 +402,7 @@ private[log] object LogCleanerManager extends Logging {
     * 参数 log: 日志
     * 参数 lastClean: 上一次清理位移
     * 参数 now: 当前时间, 单位毫秒
-    * 返回 范围下限(包括)和上限(不包括)
+    * 返回 可清理的脏日志范围下限(包括)和上限(不包括)
     */
   def cleanableOffsets(log: Log, topicPartition: TopicPartition, lastClean: immutable.Map[TopicPartition, Long], now: Long): (Long, Long) = {
 
@@ -416,7 +432,7 @@ private[log] object LogCleanerManager extends Logging {
     // find first segment that cannot be cleaned
     // neither the active segment, nor segments with any messages closer to the head of the log than the minimum compaction lag time
     // may be cleaned
-    // 获取第一个不能被清理的日志段, 该日志段或者正在追加日志, 或者消息时间戳在compact延后时间之内
+    // 获取第一个不能被清理的日志段, 该日志段或者正在追加日志, 或者消息时间戳在所设置的延后时间之内
     val firstUncleanableDirtyOffset: Long = Seq(
 
       // we do not clean beyond the first unstable offset

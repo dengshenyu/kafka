@@ -426,6 +426,7 @@ public class MemoryRecords extends AbstractRecords {
 
         // Note that `bytesRead` should contain only bytes from batches that have been processed,
         // i.e. bytes from `messagesRead` and any discarded batches.
+        // 注意`bytesRead`应该只包含处理过的batch字节, 也就是`messagesRead`和丢弃batch的总和
         public FilterResult(ByteBuffer output,
                             int messagesRead,
                             int bytesRead,

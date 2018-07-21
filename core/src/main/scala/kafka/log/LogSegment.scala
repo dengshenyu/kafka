@@ -550,6 +550,7 @@ class LogSegment private[log] (val log: FileRecords,
 
   /**
    * Flush this log segment to disk
+   * 将此日志段持久化到磁盘
    */
   @threadsafe
   def flush() {
@@ -587,7 +588,7 @@ class LogSegment private[log] (val log: FileRecords,
    * Append the largest time index entry to the time index and trim the log and indexes.
    *
    * The time index entry appended will be used to decide when to delete the segment.
-   * 在关闭日志段前调用此方法, 此方法会在时间索引中增加一个最大的时间戳索引, 并trim日志文件, 位移索引文件和时间索引文件
+   * 此方法会在时间索引中增加一个最大的时间戳索引, 并trim日志文件, 位移索引文件和时间索引文件
    */
   def onBecomeInactiveSegment() {
     //在时间戳文件中新增最大时间戳的索引条目
