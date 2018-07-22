@@ -125,7 +125,7 @@ class LogSegment private[log] (val log: FileRecords,
   @volatile private var offsetOfMaxTimestamp: Long = timeIndex.lastEntry.offset
 
   /* Return the size in bytes of this log segment */
-  /* 发怒会此日志段的字节数 */
+  /* 返回此日志段的字节数 */
   def size: Int = log.sizeInBytes()
 
   /**

@@ -44,6 +44,12 @@ import scala.collection.mutable.ArrayBuffer
  * size or I/O rate.
  *
  * A background thread handles log retention by periodically truncating excess log segments.
+ *
+ * Kafka日志管理子系统的入口. 此日志管理器负责日志创建, 获取, 清理. 所有的读和写操作都会分派给单独的日志实例.
+ *
+ * 此日志管理器在一个或多个目录中维护日志. 新日志会在包含最少日志的目录中创建, 但不会基于大小或IO速率来进行负载均衡或移动分区.
+ *
+ * 一个后台线程会通过定期截断超出的日志来保留日志.
  */
 @threadsafe
 class LogManager(logDirs: Seq[File],
@@ -73,8 +79,12 @@ class LogManager(logDirs: Seq[File],
   // Future logs are put in the directory with "-future" suffix. Future log is created when user wants to move replica
   // from one log directory to another log directory on the same broker. The directory of the future log will be renamed
   // to replace the current log of the partition after the future log catches up with the current log
+  // Future日志会放置在以"-future"结尾的目录中. 当使用者想将broker上的副本从一个目录移动到另一个目录中时, 就会创建future日志.
+  // 当future日志追上当前的日志时, future日志的目录会重命名替代当前的日志
   private val futureLogs = new Pool[TopicPartition, Log]()
+
   // Each element in the queue contains the log object to be deleted and the time it is scheduled for deletion.
+  // 此队列中的每个元素包含需要被删除的日志对象以及删除的时间
   private val logsToBeDeleted = new LinkedBlockingQueue[(Log, Long)]()
 
   private val _liveLogDirs: ConcurrentLinkedQueue[File] = createAndValidateLogDirs(logDirs, initialOfflineDirs)
@@ -108,9 +118,11 @@ class LogManager(logDirs: Seq[File],
     logDirsSet
   }
 
+  //加载日志
   loadLogs()
 
   // public, so we can access this from kafka.admin.DeleteTopicTest
+  // (compact)日志cleaner
   val cleaner: LogCleaner =
     if(cleanerConfig.enableCleaner)
       new LogCleaner(cleanerConfig, liveLogDirs, currentLogs, logDirFailureChannel, time = time)
@@ -141,6 +153,10 @@ class LogManager(logDirs: Seq[File],
    * <li> Create each directory if it doesn't exist
    * <li> Check that each path is a readable directory
    * </ol>
+   * 创建并校验指定目录(非下线目录)的合法性, 具体来讲就是:
+   *   1. 保证目录列表没有重复项;
+   *   2. 如果目录不存在则创建它;
+   *   3. 检查每个路径都是一个可读的目录
    */
   private def createAndValidateLogDirs(dirs: Seq[File], initialOfflineDirs: Seq[File]): ConcurrentLinkedQueue[File] = {
     val liveLogDirs = new ConcurrentLinkedQueue[File]()
@@ -187,6 +203,7 @@ class LogManager(logDirs: Seq[File],
   }
 
   // dir should be an absolute path
+  // 处理日志目录失败的情况, dir应该为绝对路径
   def handleLogDirFailure(dir: String) {
     info(s"Stopping serving logs in dir $dir")
     logCreationOrDeletionLock synchronized {
@@ -198,9 +215,12 @@ class LogManager(logDirs: Seq[File],
 
       recoveryPointCheckpoints = recoveryPointCheckpoints.filter { case (file, _) => file.getAbsolutePath != dir }
       logStartOffsetCheckpoints = logStartOffsetCheckpoints.filter { case (file, _) => file.getAbsolutePath != dir }
+
+      //通知cleaner停止处理该日志目录
       if (cleaner != null)
         cleaner.handleLogDirFailure(dir)
 
+      //如果该日志目录为当前使用的日志目录, 把该目录加到当前的offline集合中
       val offlineCurrentTopicPartitions = currentLogs.collect {
         case (tp, log) if log.dir.getParent == dir => tp
       }
@@ -212,6 +232,7 @@ class LogManager(logDirs: Seq[File],
         }
       }}
 
+      //如果该日志目录为future的日志目录, 把该目录加到future的offline集合中
       val offlineFutureTopicPartitions = futureLogs.collect {
         case (tp, log) if log.dir.getParent == dir => tp
       }
@@ -231,6 +252,7 @@ class LogManager(logDirs: Seq[File],
 
   /**
    * Lock all the given directories
+   * 对指定的目录列表全部进行加锁(文件锁)
    */
   private def lockLogDirs(dirs: Seq[File]): Seq[FileLock] = {
     dirs.flatMap { dir =>
@@ -257,11 +279,19 @@ class LogManager(logDirs: Seq[File],
 
   private def loadLog(logDir: File, recoveryPoints: Map[TopicPartition, Long], logStartOffsets: Map[TopicPartition, Long]): Unit = {
     debug("Loading log '" + logDir.getName + "'")
+    //日志分区
     val topicPartition = Log.parseTopicPartitionName(logDir)
+
+    //分区配置
     val config = topicConfigs.getOrElse(topicPartition.topic, currentDefaultConfig)
+
+    //恢复点
     val logRecoveryPoint = recoveryPoints.getOrElse(topicPartition, 0L)
+
+    //日志起始点
     val logStartOffset = logStartOffsets.getOrElse(topicPartition, 0L)
 
+    //加载日志
     val log = Log(
       dir = logDir,
       config = config,
@@ -275,6 +305,7 @@ class LogManager(logDirs: Seq[File],
       logDirFailureChannel = logDirFailureChannel)
 
     if (logDir.getName.endsWith(Log.DeleteDirSuffix)) {
+      //以-delete结尾的日志为需要删除的日志
       addLogToBeDeleted(log)
     } else {
       val previous = {
@@ -297,6 +328,7 @@ class LogManager(logDirs: Seq[File],
 
   /**
    * Recover and load all logs in the given data directories
+   * 恢复以及加载指定目录下的所有日志
    */
   private def loadLogs(): Unit = {
     info("Loading logs.")
@@ -307,11 +339,13 @@ class LogManager(logDirs: Seq[File],
 
     for (dir <- liveLogDirs) {
       try {
+        //每个数据目录都有单独的线程池来恢复
         val pool = Executors.newFixedThreadPool(numRecoveryThreadsPerDataDir)
         threadPools.append(pool)
 
         val cleanShutdownFile = new File(dir, Log.CleanShutdownFile)
 
+        //如果没有.kafka_cleanshutdown文件, 那么上一次退出为非优雅退出.
         if (cleanShutdownFile.exists) {
           debug(s"Found clean shutdown file. Skipping recovery for all logs in data directory: ${dir.getAbsolutePath}")
         } else {
@@ -321,6 +355,7 @@ class LogManager(logDirs: Seq[File],
 
         var recoveryPoints = Map[TopicPartition, Long]()
         try {
+          //从recovery-point-offset-checkpoint文件中读取日志恢复点
           recoveryPoints = this.recoveryPointCheckpoints(dir).read
         } catch {
           case e: Exception =>
@@ -330,6 +365,7 @@ class LogManager(logDirs: Seq[File],
 
         var logStartOffsets = Map[TopicPartition, Long]()
         try {
+          //从log-start-offset-checkpoint文件中读取日志起始位移
           logStartOffsets = this.logStartOffsetCheckpoints(dir).read
         } catch {
           case e: Exception =>
@@ -342,6 +378,7 @@ class LogManager(logDirs: Seq[File],
         } yield {
           CoreUtils.runnable {
             try {
+              //列举数据目录下的日志, 并加载之
               loadLog(logDir, recoveryPoints, logStartOffsets)
             } catch {
               case e: IOException =>
@@ -362,6 +399,7 @@ class LogManager(logDirs: Seq[File],
       for ((cleanShutdownFile, dirJobs) <- jobs) {
         dirJobs.foreach(_.get)
         try {
+          //加载完日之后删除之前的优雅退出标识文件
           cleanShutdownFile.delete()
         } catch {
           case e: IOException =>
@@ -386,32 +424,42 @@ class LogManager(logDirs: Seq[File],
 
   /**
    *  Start the background threads to flush logs and do log cleanup
+   *  启动日志刷盘和清理的后台线程
    */
   def startup() {
     /* Schedule the cleanup task to delete old logs */
     if (scheduler != null) {
       info("Starting log cleanup with a period of %d ms.".format(retentionCheckMs))
+      //对于非compact的日志, 启动定期清理日志段的后台任务
       scheduler.schedule("kafka-log-retention",
                          cleanupLogs _,
                          delay = InitialTaskDelayMs,
                          period = retentionCheckMs,
                          TimeUnit.MILLISECONDS)
+
+      //刷盘脏日志
       info("Starting log flusher with a default period of %d ms.".format(flushCheckMs))
       scheduler.schedule("kafka-log-flusher",
                          flushDirtyLogs _,
                          delay = InitialTaskDelayMs,
                          period = flushCheckMs,
                          TimeUnit.MILLISECONDS)
+
+      //将恢复点做checkpoint
       scheduler.schedule("kafka-recovery-point-checkpoint",
                          checkpointLogRecoveryOffsets _,
                          delay = InitialTaskDelayMs,
                          period = flushRecoveryOffsetCheckpointMs,
                          TimeUnit.MILLISECONDS)
+
+      //将logStartOffset做checkpoint
       scheduler.schedule("kafka-log-start-offset-checkpoint",
                          checkpointLogStartOffsets _,
                          delay = InitialTaskDelayMs,
                          period = flushStartOffsetCheckpointMs,
                          TimeUnit.MILLISECONDS)
+
+      //删除被标记为删除的日志
       scheduler.schedule("kafka-delete-logs", // will be rescheduled after each delete logs with a dynamic period
                          deleteLogs _,
                          delay = InitialTaskDelayMs,
@@ -423,6 +471,7 @@ class LogManager(logDirs: Seq[File],
 
   /**
    * Close all the logs
+   * 关闭所有日志
    */
   def shutdown() {
     info("Shutting down.")
@@ -436,6 +485,7 @@ class LogManager(logDirs: Seq[File],
     val jobs = mutable.Map.empty[File, Seq[Future[_]]]
 
     // stop the cleaner first
+    // 先停止compact日志的cleaner
     if (cleaner != null) {
       CoreUtils.swallow(cleaner.shutdown(), this)
     }
@@ -465,6 +515,7 @@ class LogManager(logDirs: Seq[File],
         dirJobs.foreach(_.get)
 
         // update the last flush point
+        // 更新最后的刷盘点
         debug("Updating recovery points at " + dir)
         checkpointLogRecoveryOffsetsInDir(dir)
 
@@ -493,6 +544,8 @@ class LogManager(logDirs: Seq[File],
    *
    * @param partitionOffsets Partition logs that need to be truncated
    * @param isFuture True iff the truncation should be performed on the future log of the specified partitions
+   *
+   * 将分区日志截断至指定位移, 并且将恢复点更新为该位移
    */
   def truncateTo(partitionOffsets: Map[TopicPartition, Long], isFuture: Boolean) {
     var truncated = false
@@ -506,6 +559,7 @@ class LogManager(logDirs: Seq[File],
       // If the log does not exist, skip it
       if (log != null) {
         //May need to abort and pause the cleaning of the log, and resume after truncation is done.
+        //终止并暂停日志的清理, 在截断完成后再恢复清理
         val needToStopCleaner = cleaner != null && truncateOffset < log.activeSegment.baseOffset
         if (needToStopCleaner && !isFuture)
           cleaner.abortAndPauseCleaning(topicPartition)
@@ -531,6 +585,8 @@ class LogManager(logDirs: Seq[File],
    * @param topicPartition The partition whose log needs to be truncated
    * @param newOffset The new offset to start the log with
    * @param isFuture True iff the truncation should be performed on the future log of the specified partition
+   *
+   * 删除一个分区的所有数据并且从指定的新位移开始新的日志
    */
   def truncateFullyAndStartAt(topicPartition: TopicPartition, newOffset: Long, isFuture: Boolean) {
     val log = {
@@ -542,6 +598,7 @@ class LogManager(logDirs: Seq[File],
     // If the log does not exist, skip it
     if (log != null) {
         //Abort and pause the cleaning of the log, and resume after truncation is done.
+        //终止并暂停日志的清理, 在截断完成后再恢复清理
       if (cleaner != null && !isFuture)
         cleaner.abortAndPauseCleaning(topicPartition)
       log.truncateFullyAndStartAt(newOffset)
@@ -556,6 +613,7 @@ class LogManager(logDirs: Seq[File],
   /**
    * Write out the current recovery point for all logs to a text file in the log directory
    * to avoid recovering the whole log on startup.
+   * 将当前所有日志的恢复点持久化到一个文件避免启动时对整个日志进行恢复
    */
   def checkpointLogRecoveryOffsets() {
     liveLogDirs.foreach(checkpointLogRecoveryOffsetsInDir)
@@ -564,6 +622,7 @@ class LogManager(logDirs: Seq[File],
   /**
    * Write out the current log start offset for all logs to a text file in the log directory
    * to avoid exposing data that have been deleted by DeleteRecordsRequest
+   * 将当前所有日志的logStartOffset持久化到一个文件避免暴露被DeleteRecordsRequest删除的数据
    */
   def checkpointLogStartOffsets() {
     liveLogDirs.foreach(checkpointLogStartOffsetsInDir)
@@ -571,6 +630,7 @@ class LogManager(logDirs: Seq[File],
 
   /**
    * Make a checkpoint for all logs in provided directory.
+   * 对指定目录下的所有日志生成一个检查点
    */
   private def checkpointLogRecoveryOffsetsInDir(dir: File): Unit = {
     for {
@@ -590,6 +650,7 @@ class LogManager(logDirs: Seq[File],
 
   /**
    * Checkpoint log start offset for all logs in provided directory.
+   * 对指定目录的所有日志的logStartOffset进行checkpoint
    */
   private def checkpointLogStartOffsetsInDir(dir: File): Unit = {
     for {
@@ -624,6 +685,7 @@ class LogManager(logDirs: Seq[File],
 
   /**
    * Get the log if it exists, otherwise return None
+   * 获取一个日志(如果它存在的话), 否则返回None
    *
    * @param topicPartition the partition of the log
    * @param isFuture True iff the future log of the specified partition should be returned
@@ -645,6 +707,10 @@ class LogManager(logDirs: Seq[File],
    * @param isNew Whether the replica should have existed on the broker or not
    * @param isFuture True iff the future log of the specified partition should be returned or created
    * @throws KafkaStorageException if isNew=false, log is not found in the cache and there is offline log directory on the broker
+   *
+   * 如果日志已经存在, 那么返回该日志;
+   * 否则, 如果isNew为true或者不是offline的日志目录, 对于指定主题和分区创建一个日志;
+   * 否则, 抛出KafkaStorageException
    */
   def getOrCreateLog(topicPartition: TopicPartition, config: LogConfig, isNew: Boolean = false, isFuture: Boolean = false): Log = {
     logCreationOrDeletionLock synchronized {
@@ -719,6 +785,10 @@ class LogManager(logDirs: Seq[File],
    *  considered for deletion in the next iteration of `deleteLogs`. The next iteration will be executed
    *  after the remaining time for the first log that is not deleted. If there are no more `logsToBeDeleted`,
    *  `deleteLogs` will be executed after `currentDefaultConfig.fileDeleteDelayMs`.
+   *  删除被标记为删除的日志.
+   *  此方法删除所有被调度删除且经过了`currentDefaultConfig.fileDeleteDelayMs`时间的日志. 对于还没有超过该时间间隔的日志
+   *  将会在下次`deleteLogs`迭代中检查是否被删除. 下一个迭代将会在第一个未删除日志的剩余时间之后执行. 如果没有需要删除的日志,
+   *  那么`deleteLogs`会在`currentDefaultConfig.fileDeleteDelayMs`后执行.
    */
   private def deleteLogs(): Unit = {
     var nextDelayMs = 0L
@@ -767,6 +837,8 @@ class LogManager(logDirs: Seq[File],
     * rename the future log of this partition in the destination log directory to be the current log
     *
     * @param topicPartition TopicPartition that needs to be swapped
+    *
+    * 将原日志目录下的分区目录标识为删除, 并且将此分区目标目录下的future日志重命名替代当前日志
     */
   def replaceCurrentWithFutureLog(topicPartition: TopicPartition): Unit = {
     logCreationOrDeletionLock synchronized {
@@ -781,6 +853,7 @@ class LogManager(logDirs: Seq[File],
       destLog.renameDir(Log.logDirName(topicPartition))
       // Now that future replica has been successfully renamed to be the current replica
       // Update the cached map and log cleaner as appropriate.
+      // 到这里证明future的副本已经成功重命名为当前副本, 更新缓存和日志cleaner
       futureLogs.remove(topicPartition)
       currentLogs.put(topicPartition, destLog)
       if (cleaner != null) {
@@ -792,6 +865,7 @@ class LogManager(logDirs: Seq[File],
         sourceLog.renameDir(Log.logDeleteDirName(topicPartition))
         // Now that replica in source log directory has been successfully renamed for deletion.
         // Close the log, update checkpoint files, and enqueue this log to be deleted.
+        // 到这里证明原目录副本已经成功重命名为删除目录, 关闭日志, 更新检查点文件, 并将此日志入队等待被删除.
         sourceLog.close()
         checkpointLogRecoveryOffsetsInDir(sourceLog.dir.getParentFile)
         checkpointLogStartOffsetsInDir(sourceLog.dir.getParentFile)
@@ -816,6 +890,8 @@ class LogManager(logDirs: Seq[File],
     * @param topicPartition TopicPartition that needs to be deleted
     * @param isFuture True iff the future log of the specified partition should be deleted
     * @return the removed log
+    *
+    * 将指定topic-partition的目录"logdir"重命名为"logdir.uuid.delete", 并且并将此日志入队等待被删除.
     */
   def asyncDelete(topicPartition: TopicPartition, isFuture: Boolean = false): Log = {
     val removedLog: Log = logCreationOrDeletionLock synchronized {
@@ -864,6 +940,7 @@ class LogManager(logDirs: Seq[File],
   /**
    * Delete any eligible logs. Return the number of segments deleted.
    * Only consider logs that are not compacted.
+   * 删除任何可以被删除的日志, 并返回删除的日志段数量. 这里只需要考虑非compact的日志
    */
   def cleanupLogs() {
     debug("Beginning log cleanup...")
@@ -908,6 +985,7 @@ class LogManager(logDirs: Seq[File],
 
   /**
    * Flush any log which has exceeded its flush interval and has unwritten messages.
+   * 将超过刷盘时间间隔且有未持久化消息的日志进行刷盘
    */
   private def flushDirtyLogs(): Unit = {
     debug("Checking for dirty logs to flush...")

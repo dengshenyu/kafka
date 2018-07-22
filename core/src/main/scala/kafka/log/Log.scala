@@ -294,7 +294,8 @@ class Log(@volatile var dir: File,
    * equals the log end offset (which may never happen for a partition under consistent load). This is needed to
    * prevent the log start offset (which is exposed in fetch responses) from getting ahead of the high watermark.
    */
-  //已完成复制的事务位移
+  //跟踪当前的高水位线, 以保证位移大于等于高水位线的日志段不会被删除. 这意味着当前的活跃日志段只有在高水位线等于logEndOffset时,才会被
+  //删除(而这对于持续写入的分区来说可能永远不会发生). 这是必须的, 因为需要防止logStartOffset(会在拉取请求中返回)超过高水位线
   @volatile private var replicaHighWatermark: Option[Long] = None
 
   /* the actual segments of the log */
@@ -894,7 +895,7 @@ class Log(@volatile var dir: File,
   /**
    * Close file handlers used by log but don't write to disk. This is called if the log directory is offline
    *
-   * 关闭日志的文件处理但不写入磁盘, 此方法在日志目录下线时执行
+   * 关闭日志的文件处理, 但不写入磁盘, 此方法在日志目录下线时执行
    */
   def closeHandlers() {
     debug("Closing handlers")
@@ -1703,6 +1704,14 @@ class Log(@volatile var dir: File,
    * @param predicate A function that takes in a candidate log segment and the next higher segment
    *                  (if there is one) and returns true iff it is deletable
    * @return the segments ready to be deleted
+   *
+   * 从最早的日志段开始查找直到参数中的断言为false或者到达了当前高水位线所在的日志段. 我们不删除位移大于等于高水位线的
+   * 日志段, 这样保证日志起始位移永远不会超过高水位线. 如果高水位线没有被初始化, 那么不会有任何的日志段被删除.
+   *
+   * 这里永远不会返回最后的空日志段(因为该日志段是刚刚重新创建的)
+   *
+   * 参数 predicate: 一个函数, 参数为候选的日志段以及下一个日志段(如果存在), 返回true当且仅当该日志段可以被删除
+   * 返回 可以被删除的日志段
    */
   private def deletableSegments(predicate: (LogSegment, Option[LogSegment]) => Boolean): Iterable[LogSegment] = {
     if (segments.isEmpty || replicaHighWatermark.isEmpty) {
@@ -1733,12 +1742,15 @@ class Log(@volatile var dir: File,
   /**
    * Delete any log segments that have either expired due to time based retention
    * or because the log size is > retentionSize
+   *
+   * 删除过期的或者大小超过retentionSize的日志段
    */
   def deleteOldSegments(): Int = {
     if (!config.delete) return 0
     deleteRetentionMsBreachedSegments() + deleteRetentionSizeBreachedSegments() + deleteLogStartOffsetBreachedSegments()
   }
 
+  //删除过期的日志段
   private def deleteRetentionMsBreachedSegments(): Int = {
     if (config.retentionMs < 0) return 0
     val startMs = time.milliseconds
@@ -1972,7 +1984,7 @@ class Log(@volatile var dir: File,
    *
    * Return the minimum snapshots offset that was retained.
    *
-   * 在恢复点前的老的生产者快照. 保留最近日志段的生产者快照是非常有用的, 这样我们在日志截断时可以使用来重建生产者状态, 否则
+   * 在恢复点做完checkpoint之后删除老的生产者快照. 保留最近日志段的生产者快照是非常有用的, 这样我们在日志截断时可以使用来重建生产者状态, 否则
    * 需要从最早的日志段开始来重建.
    *
    * 准确来说:
@@ -2580,6 +2592,7 @@ object Log {
   /**
    * Return a directory name for the given topic partition. The name will be in the following
    * format: topic-partition where topic, partition are variables.
+   * 返回指定主题分区的目录名称, 名称为如下格式: topic-partition
    */
   def logDirName(topicPartition: TopicPartition): String = {
     s"${topicPartition.topic}-${topicPartition.partition}"

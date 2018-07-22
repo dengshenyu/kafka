@@ -265,7 +265,7 @@ class LogCleaner(initialConfig: CleanerConfig,
 
   /**
    * Truncate cleaner offset checkpoint for the given partition if its checkpointed offset is larger than the given offset
-   * 如果分区的检查点位移超过指定位移, 那么将其截断并更新为该指定位移
+   * 如果分区的cleaner位移检查点超过指定位移, 那么将其截断并更新为该指定位移
    */
   def maybeTruncateCheckpoint(dataDir: File, topicPartition: TopicPartition, offset: Long) {
     cleanerManager.maybeTruncateCheckpoint(dataDir, topicPartition, offset)
