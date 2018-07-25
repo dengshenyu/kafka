@@ -63,17 +63,21 @@ class CheckpointFile[T](val file: File,
         val fileOutputStream = new FileOutputStream(tempPath.toFile)
         val writer = new BufferedWriter(new OutputStreamWriter(fileOutputStream, StandardCharsets.UTF_8))
         try {
+          //版本
           writer.write(version.toString)
           writer.newLine()
 
+          //总条目个数
           writer.write(entries.size.toString)
           writer.newLine()
 
+          //写入每个条目
           entries.foreach { entry =>
             writer.write(formatter.toLine(entry))
             writer.newLine()
           }
 
+          //刷盘
           writer.flush()
           fileOutputStream.getFD().sync()
         } finally {

@@ -219,6 +219,8 @@ class ClientQuotaManager(private val config: ClientQuotaManagerConfig,
     * @param value amount of data in bytes or request processing time as a percentage
     * @param timeMs time to record the value at
     * @return throttle time in milliseconds
+    *
+    *
     */
   def maybeRecordAndGetThrottleTimeMs(request: RequestChannel.Request, value: Double, timeMs: Long): Int = {
     maybeRecordAndGetThrottleTimeMs(request.session, request.header.clientId, value, timeMs)
@@ -226,7 +228,9 @@ class ClientQuotaManager(private val config: ClientQuotaManagerConfig,
 
   def maybeRecordAndGetThrottleTimeMs(session: Session, clientId: String, value: Double, timeMs: Long): Int = {
     // Record metrics only if quotas are enabled.
+    // 启用限流
     if (quotasEnabled) {
+      //记录指标. 如果速率超出限额则返回需要延迟的时间, 否则返回0.
       recordAndGetThrottleTimeMs(session, clientId, value, timeMs)
     } else {
       0
@@ -241,6 +245,7 @@ class ClientQuotaManager(private val config: ClientQuotaManagerConfig,
     } catch {
       case _: QuotaViolationException =>
         // Compute the delay
+        // 超出了限额, 计算需要延迟多久时间才能将速率降到目标水平
         val clientMetric = metrics.metrics().get(clientRateMetricName(clientSensors.metricTags))
         throttleTimeMs = throttleTime(clientMetric).toInt
         debug("Quota violated for sensor (%s). Delay time: (%d)".format(clientSensors.quotaSensor.name(), throttleTimeMs))
@@ -268,6 +273,11 @@ class ClientQuotaManager(private val config: ClientQuotaManagerConfig,
     * @param throttleTimeMs Duration in milliseconds for which the channel is to be muted.
     * @param channelThrottlingCallback Callback for channel throttling
     * @return ThrottledChannel object
+   *
+    * 将与client所关联的channel静止, 从而达到对该client限流的目的
+    * 参数 request: client请求
+    * 参数 throttleTimeMs: channel静止的时间, 单位毫秒
+    * 参数 channelThrottlingCallback: channel限流的回调
     */
   def throttle(request: RequestChannel.Request, throttleTimeMs: Int, channelThrottlingCallback: Response => Unit): Unit = {
     if (throttleTimeMs > 0) {
@@ -320,6 +330,12 @@ class ClientQuotaManager(private val config: ClientQuotaManagerConfig,
    * Basically, if O is the observed rate and T is the target rate over a window of W, to bring O down to T,
    * we need to add a delay of X to W such that O * W / (W + X) = T.
    * Solving for X, we get X = (O - T)/T * W.
+   */
+  /*
+   * 这里计算需要等待多久才能把速率降到目标水平.
+   *
+   * 如果在W时间内, O为实际速率, 而T为期望速率, 那么为了将O降到T, 需要增加延时X使得 O * W / (W + X) = T.
+   * 为了计算X, 我们可以使用 X = (O - T) / T * W.
    */
   protected def throttleTime(clientMetric: KafkaMetric): Long = {
     val config = clientMetric.config

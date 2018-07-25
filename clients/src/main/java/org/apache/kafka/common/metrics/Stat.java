@@ -19,6 +19,9 @@ package org.apache.kafka.common.metrics;
 /**
  * A Stat is a quantity such as average, max, etc that is computed off the stream of updates to a sensor
  */
+/**
+ * 一个Stat是一个可衡量的指标(例如平均值, 最大值等等), 这个指标根据流不断更新
+ */
 public interface Stat {
 
     /**

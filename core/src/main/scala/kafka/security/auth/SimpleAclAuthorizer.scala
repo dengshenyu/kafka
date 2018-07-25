@@ -115,11 +115,14 @@ class SimpleAclAuthorizer extends Authorizer with Logging {
     val acls = getMatchingAcls(resource.resourceType, resource.name)
 
     // Check if there is any Deny acl match that would disallow this operation.
+    // 检查是否有Deny的acl规则拒绝此操作
     val denyMatch = aclMatch(operation, resource, principal, host, Deny, acls)
 
     // Check if there are any Allow ACLs which would allow this operation.
     // Allowing read, write, delete, or alter implies allowing describe.
     // See #{org.apache.kafka.common.acl.AclOperation} for more details about ACL inheritance.
+    // 检查是否有Allow的acl规则允许此操作
+    // 允许读, 写, 删除, 或者更改意味着允许describe, 更多关于ACL继承细节详见#{org.apache.kafka.common.acl.AclOperation}
     val allowOps = operation match {
       case Describe => Set[Operation](Describe, Read, Write, Delete, Alter)
       case DescribeConfigs => Set[Operation](DescribeConfigs, AlterConfigs)
@@ -129,6 +132,8 @@ class SimpleAclAuthorizer extends Authorizer with Logging {
 
     //we allow an operation if a user is a super user or if no acls are found and user has configured to allow all users
     //when no acls are found or if no deny acls are found and at least one allow acls matches.
+    //如果调用者为超级用户 或者 没有acl规则而且允许所有调用者调用 或者 没有deny规则匹配而且至少有一个allow规则匹配的话,
+    //则允许操作
     val authorized = isSuperUser(operation, resource, principal, host) ||
       isEmptyAclAndAuthorized(operation, resource, principal, host, acls) ||
       (!denyMatch && allowMatch)

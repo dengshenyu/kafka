@@ -50,6 +50,9 @@ object Resource {
  * @param name non-null name of the resource, for topic this will be topic name , for group it will be group name. For cluster type
  *             it will be a constant string kafka-cluster.
  * @param patternType non-null resource pattern type: literal, prefixed, etc.
+ * 参数 resourceType: 资源类型(不为null)
+ * 参数 name: 资源名称(非null), 对于主题来说为主题名称, 对于分组来说为分组名称, 对于集群来说为一个固定常量kafka-cluster
+ * 参数 patternType: 资源模式类型(非null): 字面量, 带前缀, 等等.
  */
 case class Resource(resourceType: ResourceType, name: String, patternType: PatternType) {
 
